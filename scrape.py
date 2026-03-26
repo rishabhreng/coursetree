@@ -160,9 +160,10 @@ def construct_course_db():
         get_all_courses_for_term(term_code, export_to_sql=True)
 
 if __name__ == "__main__":
-    construct_subject_code_db()
-    print("Finished constructing subject code DB")
-    construct_school_db()
-    print("Finished constructing school DB")
-    construct_course_db()
-    print("Finished constructing course DB")
+    get_all_courses_for_term('202730', export_to_sql=True)
+    # construct_subject_code_db()
+    # print("Finished constructing subject code DB")
+    # construct_school_db()
+    # print("Finished constructing school DB")
+    # # construct_course_db()
+    # # print("Finished constructing course DB")

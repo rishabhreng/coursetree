@@ -3,6 +3,8 @@ from typing import List, Optional
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.staticfiles import StaticFiles
 import sqlite3 as sql
 
 try:
@@ -11,6 +13,7 @@ except ImportError:
     fuzz = None
 
 app = FastAPI()
+app.mount('/static', StaticFiles(directory='static'), name='static')
 
 # Allow the frontend to call the API from a different origin during development.
 app.add_middleware(
@@ -100,8 +103,59 @@ def _group_by_course_code(scored_rows, term_code):
     return ordered
 
 
+@app.get("/debug/")
+def debug_ui():
+    # if you have Vite running at 5173 during local development, redirect there.
+    # Otherwise, keep using the /search endpoints through your API client.
+    return RedirectResponse(url="http://127.0.0.1:5173/")
+
+@app.get("/debug-html", response_class=HTMLResponse)
+def debug_ui() -> str:
+    return """<!DOCTYPE html>
+<html lang=\"en\">
+<head>
+<meta charset=\"UTF-8\">
+<meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\">
+<title>Course Search Debug UI</title>
+<style>
+:root { --bg:#0a1224; --panel:#122040; --text:#f4f8ff; --muted:#9ab5d2; --primary:#68a7ff; }
+* { box-sizing:border-box; }
+body { margin:0; font-family:Inter, Arial, sans-serif; color:var(--text); background:radial-gradient(circle at 20% 0%, #2c4d8a 0%, var(--bg) 70%); }
+.container { max-width:1000px; margin:1.8rem auto; padding:1rem; }
+h1 { margin:0 0 0.25rem; }
+p.desc { margin:0 0 1rem; color:var(--muted); }
+.form { display:grid; grid-template-columns:1fr 1fr 1fr auto auto; gap:0.8rem; margin-bottom:1rem; }
+.form input, .form button { border:1px solid rgba(255,255,255,0.1); border-radius:10px; padding:0.7rem; font-size:0.95rem; background:rgba(22,36,64,0.7); color:var(--text); }
+.form button { font-weight:600; background:var(--primary); color:white; }
+.card { background:rgba(12,23,43,.8); border:1px solid rgba(255,255,255,0.08); border-radius:14px; padding:0.8rem; margin-bottom:10px; }
+.details > summary { list-style:none; cursor:pointer; font-weight:700; padding:0.8rem; border-radius:10px; color:#ecf5ff; background:rgba(0,0,0,.15); }
+.details .section-list { padding:0.8rem; display:grid; grid-template-columns:1fr; gap:0.6rem; }
+.section-card { background:rgba(255,255,255,.05); border:1px solid rgba(255,255,255,.1); border-radius:10px; padding:0.7rem; }
+.section-card h4 { margin:0 0 0.2rem; font-size:1rem; color:#d2e8ff; }
+.section-card p { margin:0.2rem 0; color:var(--muted); font-size:0.88rem; }
+.pill { display:inline-block; background:rgba(84,150,255,0.22); padding:2px 8px; border-radius:999px; margin-right:4px; font-size:0.78rem; }
+.link-btn { display:inline-block; margin-top:6px; color:#a8d0ff; text-decoration:none; }
+</style>
+</head>
+<body>
+<div class=\"container\">
+  <h1>Course Search Debug (TS Modern)</h1>
+  <p class=\"desc\">Search courses in your database and explore results by course code.</p>
+  <div class=\"form\">
+    <input id=\"q\" type=\"text\" placeholder=\"Query e.g. COMP 182\" value=\"COMP 182\" />
+    <input id=\"term\" type=\"text\" placeholder=\"Term code e.g. 202710\" value=\"202710\" />
+    <input id=\"top\" type=\"number\" min=\"1\" value=\"20\" />
+    <button id=\"search\" type=\"button\">Search</button>
+    <button id=\"searchAll\" type=\"button\">Search All</button>
+  </div>
+  <div id=\"result\"></div>
+</div>
+<script type=\"module\" src=\"/static/debug.ts\"></script>
+</body>
+</html>"""
+
 @app.get("/search/")
-def search(q: str, term_code: str = '202620', top_n_results: int = 15) -> dict:
+def search(q: str, term_code: str = '202710', top_n_results: int = 15) -> dict:
     term_code = term_code.strip()
     table = _term_table(term_code)
 
@@ -128,7 +182,7 @@ def search(q: str, term_code: str = '202620', top_n_results: int = 15) -> dict:
 
 
 @app.get("/course/{crn}")
-def get_course(crn: str, term_code: str = '202620') -> dict:
+def get_course(crn: str, term_code: str = '202710') -> dict:
     table = _term_table(term_code)
     con = sql.connect('courses.db')
     con.row_factory = sql.Row

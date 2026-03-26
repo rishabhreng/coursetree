@@ -1,120 +1,104 @@
-import { useState } from 'react'
-import reactLogo from './assets/react.svg'
-import viteLogo from './assets/vite.svg'
-import heroImg from './assets/hero.png'
+import { useEffect, useState } from 'react'
 import './App.css'
 
+type CourseSection = {
+  term: string
+  crn: string
+  crs: string
+  title: string
+  instructors: string
+  meeting_times: string
+  credits: string
+  course_page?: string | null
+  score?: number
+}
+
+type SearchResponse = Record<string, CourseSection[]>
+
 function App() {
-  const [count, setCount] = useState(0)
+  const [q, setQ] = useState('COMP 182')
+  const [term, setTerm] = useState('202710')
+  const [top, setTop] = useState(15)
+  const [results, setResults] = useState<SearchResponse>({})
+  const [error, setError] = useState<string | null>(null)
+
+  const apiBase = import.meta.env.VITE_API_BASE_URL || 'http://127.0.0.1:8000'
+
+  const fetchData = async (endpoint: 'search' | 'searchall') => {
+    try {
+      setError(null)
+      const url =
+        endpoint === 'search'
+          ? `${apiBase}/search/?q=${encodeURIComponent(q)}&term_code=${encodeURIComponent(term)}&top_n_results=${top}`
+          : `${apiBase}/searchall?q=${encodeURIComponent(q)}&top_n_results=${top}`
+
+      const response = await fetch(url)
+      const text = await response.text()
+      if (!response.ok) {
+        throw new Error(`Status ${response.status}: ${text}`)
+      }
+      if (!text.trim().startsWith('{') && !text.trim().startsWith('[')) {
+        throw new Error(`Expected JSON response but got: ${text.slice(0, 260)}`)
+      }
+      const data = (JSON.parse(text) as SearchResponse)
+      setResults(data)
+    } catch (err) {
+      setError((err as Error).message || 'Unexpected error')
+    }
+  }
+
+  useEffect(() => {
+    fetchData('search')
+  }, [])
 
   return (
-    <>
-      <section id="center">
-        <div className="hero">
-          <img src={heroImg} className="base" width="170" height="179" alt="" />
-          <img src={reactLogo} className="framework" alt="React logo" />
-          <img src={viteLogo} className="vite" alt="Vite logo" />
+    <main className="app-shell">
+      <div className="toolbar">
+        <div className="title-area">
+          <h1>Course Search Debug (React App.tsx)</h1>
+          <p>Use this as your app UI for deployment.</p>
         </div>
-        <div>
-          <h1>Get started</h1>
-          <p>
-            Edit <code>src/App.tsx</code> and save to test <code>HMR</code>
-          </p>
+
+        <div className="controls">
+          <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="query" />
+          <input value={term} onChange={(e) => setTerm(e.target.value)} placeholder="term" />
+          <input type="number" min={1} value={top} onChange={(e) => setTop(Number(e.target.value))} />
+          <button onClick={() => fetchData('search')}>Search</button>
+          <button onClick={() => fetchData('searchall')}>Search All</button>
         </div>
-        <button
-          className="counter"
-          onClick={() => setCount((count) => count + 1)}
-        >
-          Count is {count}
-        </button>
+      </div>
+
+      {error && <div className="error">Error: {error}</div>}
+
+      <section className="results">
+        {Object.entries(results).map(([courseCode, sections]) => (
+          <details key={courseCode} className="course-group">
+            <summary>
+              {courseCode} <span className="badge">{sections.length}</span>
+            </summary>
+            <div className="section-list">
+              {sections.map((section, idx) => (
+                <article key={`${courseCode}-${section.crn}-${idx}`} className="section-card">
+                  <h3>{section.crs} - {section.title}</h3>
+                  <p className="meta">
+                    <span>{section.term}</span>
+                    <span>{section.crn}</span>
+                    <span>{section.credits} cr</span>
+                  </p>
+                  <p><strong>Instructor:</strong> {section.instructors || 'TBA'}</p>
+                  <p><strong>Time:</strong> {section.meeting_times || 'TBA'}</p>
+                  {section.course_page && (
+                    <a className="link" href={section.course_page} target="_blank" rel="noreferrer">
+                      Course page
+                    </a>
+                  )}
+                </article>
+              ))}
+            </div>
+          </details>
+        ))}
       </section>
-
-      <div className="ticks"></div>
-
-      <section id="next-steps">
-        <div id="docs">
-          <svg className="icon" role="presentation" aria-hidden="true">
-            <use href="/icons.svg#documentation-icon"></use>
-          </svg>
-          <h2>Documentation</h2>
-          <p>Your questions, answered</p>
-          <ul>
-            <li>
-              <a href="https://vite.dev/" target="_blank">
-                <img className="logo" src={viteLogo} alt="" />
-                Explore Vite
-              </a>
-            </li>
-            <li>
-              <a href="https://react.dev/" target="_blank">
-                <img className="button-icon" src={reactLogo} alt="" />
-                Learn more
-              </a>
-            </li>
-          </ul>
-        </div>
-        <div id="social">
-          <svg className="icon" role="presentation" aria-hidden="true">
-            <use href="/icons.svg#social-icon"></use>
-          </svg>
-          <h2>Connect with us</h2>
-          <p>Join the Vite community</p>
-          <ul>
-            <li>
-              <a href="https://github.com/vitejs/vite" target="_blank">
-                <svg
-                  className="button-icon"
-                  role="presentation"
-                  aria-hidden="true"
-                >
-                  <use href="/icons.svg#github-icon"></use>
-                </svg>
-                GitHub
-              </a>
-            </li>
-            <li>
-              <a href="https://chat.vite.dev/" target="_blank">
-                <svg
-                  className="button-icon"
-                  role="presentation"
-                  aria-hidden="true"
-                >
-                  <use href="/icons.svg#discord-icon"></use>
-                </svg>
-                Discord
-              </a>
-            </li>
-            <li>
-              <a href="https://x.com/vite_js" target="_blank">
-                <svg
-                  className="button-icon"
-                  role="presentation"
-                  aria-hidden="true"
-                >
-                  <use href="/icons.svg#x-icon"></use>
-                </svg>
-                X.com
-              </a>
-            </li>
-            <li>
-              <a href="https://bsky.app/profile/vite.dev" target="_blank">
-                <svg
-                  className="button-icon"
-                  role="presentation"
-                  aria-hidden="true"
-                >
-                  <use href="/icons.svg#bluesky-icon"></use>
-                </svg>
-                Bluesky
-              </a>
-            </li>
-          </ul>
-        </div>
-      </section>
-
-      <div className="ticks"></div>
-      <section id="spacer"></section>
-    </>
+    </main>
   )
 }
 
