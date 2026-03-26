@@ -1,4 +1,4 @@
-import { FormEvent } from 'react'
+import type { FormEvent } from 'react'
 
 export type CourseSummary = {
   crn: string
@@ -17,7 +17,7 @@ type Props = {
   onQueryChange: (next: string) => void
   onSelect: (course: CourseSummary) => void
 }
-import 
+
 export default function SearchPanel({
   query,
   isLoading,
