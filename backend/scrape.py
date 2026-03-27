@@ -1,4 +1,5 @@
 from calendar import c
+import os
 
 import bs4
 import requests as r
@@ -10,6 +11,9 @@ import sqlite3 as sql
 META_COURSES_URL = 'https://courses.rice.edu/courses/!SWKSCAT.info'
 BASE_COURSES_URL = 'https://courses.rice.edu/'
 BASE_GA_URL = 'https://ga.rice.edu'
+
+BASE_DB_DIR = os.path.dirname(os.path.abspath(__file__))
+
 
 def get_term_codes() -> DataFrame:    
     req = r.get(f"{META_COURSES_URL}?action=TERMS", timeout=15) 
@@ -41,7 +45,7 @@ def get_subject_codes_for_term(term_code: str, export_to_sql=False) -> DataFrame
 
     if export_to_sql:
         try:
-            con = sql.connect(f'subjects.db')
+            con = sql.connect(f'{BASE_DB_DIR}/subjects.db')
             df.to_sql(name = f'subjects_{term_code}', con=con, if_exists='replace', index=False)
         except ValueError as e:
             print(e)
@@ -65,7 +69,7 @@ def get_schools_for_term(term_code: str, export_to_sql=False) -> DataFrame:
     df = DataFrame(df)
     if export_to_sql:
         try:
-            con = sql.connect(f'schools.db')
+            con = sql.connect(f'{BASE_DB_DIR}/schools.db')
             df.to_sql(f'schools_{term_code}', con, index=False, if_exists='replace')
         except ValueError as e:
             print(e)
@@ -85,7 +89,7 @@ def get_all_courses_for_term(term_code: str, export_to_sql = False) -> DataFrame
     df = pd.concat(all_courses, ignore_index=True)
     if export_to_sql:
         try: 
-            con = sql.connect(f'courses.db')
+            con = sql.connect(f'{BASE_DB_DIR}/courses.db')
             df.to_sql(f'courses_{term_code}', con, index=False, if_exists='replace')
         except ValueError as e:
             print(e)
@@ -160,8 +164,8 @@ def construct_course_db():
         get_all_courses_for_term(term_code, export_to_sql=True)
 
 if __name__ == "__main__":
-    get_all_courses_for_term('202730', export_to_sql=True)
-    # construct_subject_code_db()
+    # get_all_courses_for_term('202730', export_to_sql=True)
+    construct_subject_code_db()
     # print("Finished constructing subject code DB")
     # construct_school_db()
     # print("Finished constructing school DB")
