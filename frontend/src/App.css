@@ -1,3 +1,31 @@
+@font-face {
+  font-family: 'Computer Modern Sans';
+  src: url('/fonts/cmunss.ttf') format('truetype');
+  font-weight: 400;
+  font-style: normal;
+}
+
+@font-face {
+  font-family: 'Computer Modern Sans';
+  src: url('/fonts/cmunsi.ttf') format('truetype');
+  font-weight: 400;
+  font-style: italic;
+}
+
+@font-face {
+  font-family: 'Computer Modern Sans';
+  src: url('/fonts/cmunsx.ttf') format('truetype');
+  font-weight: 700;
+  font-style: normal;
+}
+
+@font-face {
+  font-family: 'Computer Modern Sans';
+  src: url('/fonts/cmunso.ttf') format('truetype');
+  font-weight: 700;
+  font-style: italic;
+}
+
 * {
   margin: 0;
   padding: 0;
@@ -21,7 +49,7 @@
 }
 
 body {
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Oxygen',
+  font-family: 'Computer Modern Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Oxygen',
     'Ubuntu', 'Cantarell', 'Fira Sans', 'Droid Sans', 'Helvetica Neue',
     sans-serif;
   background: var(--bg-primary);
@@ -38,9 +66,12 @@ body {
   text-align: center;
   margin-bottom: 40px;
   padding: 40px 20px 20px;
+  max-width: 100%;
+  overflow: hidden;
 }
 
 .header h1 {
+  font-family: inherit;
   font-size: 2.5rem;
   font-weight: 700;
   margin-bottom: 8px;
@@ -48,6 +79,10 @@ body {
   -webkit-background-clip: text;
   -webkit-text-fill-color: transparent;
   background-clip: text;
+  word-wrap: break-word;
+  overflow-wrap: break-word;
+  white-space: normal;
+  line-height: 1.2;
 }
 
 .header .tagline {
@@ -280,7 +315,7 @@ body {
   flex-wrap: wrap;
 }
 
-.card-meta>span {
+.card-meta > span {
   display: inline-flex;
   align-items: center;
   padding: 6px 12px;
