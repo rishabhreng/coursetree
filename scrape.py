@@ -7,6 +7,7 @@ from xml.etree import ElementTree as ET
 import pandas as pd
 from pandas import DataFrame
 import sqlite3 as sql
+import json
 
 META_COURSES_URL = 'https://courses.rice.edu/courses/!SWKSCAT.info'
 BASE_COURSES_URL = 'https://courses.rice.edu/'
@@ -124,7 +125,7 @@ def get_course_info(term_code: str, school_code: str) -> DataFrame:
             'crn': cells[0].text,
             'crs': cells[1].text,
             'title': cells[3].text, #ignore "part of term" entry
-            'instructors': cells[4].text,
+            'instructors': json.dumps([instructor.text for instructor in cells[4].find_all('a')]),
             'meeting_times': cells[5].find('div').text.strip(), # ignore final exam time
             'credits': cells[6].text,
             'course_page': f"{BASE_COURSES_URL}{cells[0].a['href']}"
@@ -175,9 +176,9 @@ def construct_course_db():
 
 if __name__ == "__main__":
     # get_all_courses_for_term('202730', export_to_sql=True)
-    construct_subject_code_db()
+    # construct_subject_code_db()
     # print("Finished constructing subject code DB")
     # construct_school_db()
     # print("Finished constructing school DB")
-    # # construct_course_db()
+    construct_course_db()
     # # print("Finished constructing course DB")

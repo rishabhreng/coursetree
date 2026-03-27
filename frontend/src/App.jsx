@@ -1,41 +1,59 @@
-import { useState, useEffect } from 'react'
+import { useEffect, useState } from 'react'
 import './App.css'
+
+const DEFAULT_TERM_CODE = '202710'
 
 function App() {
   const [query, setQuery] = useState('')
-  const [termCode, setTermCode] = useState('')
+  const [termCode, setTermCode] = useState('all')
   const [terms, setTerms] = useState([])
   const [results, setResults] = useState({})
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState(null)
   const [expandedCourses, setExpandedCourses] = useState(new Set())
 
-  // Fetch available terms on mount
   useEffect(() => {
     const fetchTerms = async () => {
       try {
         const res = await fetch('/api/terms')
-        if (!res.ok) throw new Error('Failed to fetch terms')
+        if (!res.ok) throw new Error(`Failed to fetch terms: ${res.status}`)
         const data = await res.json()
-        setTerms(data)
-        // Set default to first term
-        if (data.length > 0) {
-          setTermCode(data[0].code)
-        }
+        setTerms(Array.isArray(data) ? data : [])
       } catch (err) {
         console.error('Error fetching terms:', err)
       }
     }
+
     fetchTerms()
   }, [])
 
   // Convert term code to readable format (e.g., 202710 -> Fall 2026)
   const getTermLabel = (code) => {
-    const foundTerm = terms.find(t => t.code === code)
-    return foundTerm ? foundTerm.term : code
+    const foundTerm = terms.find((term) => term.code === code)
+    if (foundTerm) return foundTerm.term
+    if (code === DEFAULT_TERM_CODE) return 'Current Term'
+    return code
   }
 
-  const doSearch = async (useTerm = false) => {
+  const normalizeResults = (payload) => {
+    if (Array.isArray(payload)) {
+      // Backward/forward compatible: some API versions return a list of rows.
+      return payload.reduce((acc, course) => {
+        const key = course.crs || `${course.term}-${course.crn}`
+        if (!acc[key]) acc[key] = []
+        acc[key].push(course)
+        return acc
+      }, {})
+    }
+
+    if (payload && typeof payload === 'object') {
+      return payload
+    }
+
+    return {}
+  }
+
+  const doSearch = async () => {
     if (!query.trim()) {
       setResults({})
       return
@@ -45,17 +63,16 @@ function App() {
     setError(null)
 
     try {
-      const endpoint = useTerm && termCode.trim() ? '/api/courses/' : '/api/courses/all'
       const searchParams = new URLSearchParams({ q: query.trim() })
-      if (useTerm && termCode.trim()) {
+      if (termCode.trim()) {
         searchParams.set('term_code', termCode.trim())
       }
 
-      const res = await fetch(`${endpoint}?${searchParams.toString()}`)
+      const res = await fetch(`/api/courses/?${searchParams.toString()}`)
       if (!res.ok) throw new Error(`Search failed ${res.status}`)
       const json = await res.json()
 
-      setResults(json)
+      setResults(normalizeResults(json))
       setExpandedCourses(new Set())
     } catch (err) {
       setError(err.message ?? 'Unable to fetch')
@@ -66,7 +83,7 @@ function App() {
 
   const onEnter = (e) => {
     if (e.key === 'Enter') {
-      doSearch(Boolean(termCode.trim()))
+      doSearch()
     }
   }
 
@@ -82,13 +99,29 @@ function App() {
 
   // Format instructors: split by common delimiters and join nicely
   const formatInstructors = (instructorStr) => {
-    if (!instructorStr || instructorStr === 'TBA') return 'TBA'
-    // Split by common delimiters
+    if (!instructorStr || instructorStr === 'TBA' || instructorStr === '[]') return 'TBA'
+
+    const trimmed = instructorStr.trim()
+
+    // Parse JSON-like arrays from the scraper, e.g. ["A", "B"]
+    if (trimmed.startsWith('[') && trimmed.endsWith(']')) {
+      try {
+        const parsed = JSON.parse(trimmed)
+        if (Array.isArray(parsed)) {
+          const names = parsed.map((name) => String(name).trim()).filter(Boolean)
+          return names.length > 0 ? names.join(', ') : 'TBA'
+        }
+      } catch {
+        // Fall through to delimiter-based parsing below.
+      }
+    }
+
     const instructors = instructorStr
       .split(/,|;\s*/)
       .map(s => s.trim())
       .filter(s => s.length > 0)
-    return instructors.join(', ')
+
+    return instructors.length > 0 ? instructors.join(', ') : 'TBA'
   }
 
   const courseEntries = Object.entries(results).sort()
@@ -121,18 +154,21 @@ function App() {
                 value={termCode}
                 onChange={(e) => setTermCode(e.target.value)}
               >
-                <option value="">All Terms</option>
+                <option value="all">All Terms</option>
                 {terms.map((term) => (
                   <option key={term.code} value={term.code}>
                     {term.term}
                   </option>
                 ))}
+                {!terms.some((term) => term.code === DEFAULT_TERM_CODE) && (
+                  <option value={DEFAULT_TERM_CODE}>Current Term</option>
+                )}
               </select>
             </div>
 
             <button
               className="search-btn"
-              onClick={() => doSearch(Boolean(termCode.trim()))}
+              onClick={doSearch}
             >
               Search
             </button>
@@ -155,7 +191,7 @@ function App() {
 
               const firstCourse = courseInstances[0]
               const courseUrl = firstCourse.course_page ||
-                `https://courses.rice.edu/admweb/!SWKSCAT.cat?p_action=COURSE&p_term=${firstCourse.term}&p_crn=${firstCourse.crn}`
+                `https://courses.rice.edu/courses/courses/!SWKSCAT.cat?p_action=COURSE&p_term=${firstCourse.term}&p_crn=${firstCourse.crn}`
 
               return (
                 <div key={courseCode} className="course-group">
@@ -198,7 +234,7 @@ function App() {
                       <a
                         key={`${course.crn}-${course.term}`}
                         className="course-card course-link"
-                        href={course.course_page || `https://courses.rice.edu/admweb/!SWKSCAT.cat?p_action=COURSE&p_term=${course.term}&p_crn=${course.crn}`}
+                        href={course.course_page || `https://courses.rice.edu/courses/courses/!SWKSCAT.cat?p_action=COURSE&p_term=${course.term}&p_crn=${course.crn}`}
                         target="_blank"
                         rel="noreferrer"
                       >

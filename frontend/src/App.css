@@ -315,7 +315,7 @@ body {
   flex-wrap: wrap;
 }
 
-.card-meta > span {
+.card-meta>span {
   display: inline-flex;
   align-items: center;
   padding: 6px 12px;
