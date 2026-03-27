@@ -15,7 +15,7 @@ BASE_GA_URL = 'https://ga.rice.edu'
 BASE_DB_DIR = os.path.dirname(os.path.abspath(__file__))
 
 
-def get_term_codes() -> DataFrame:    
+def get_term_codes(export_to_sql=False) -> DataFrame:    
     req = r.get(f"{META_COURSES_URL}?action=TERMS", timeout=15) 
     terms = ET.fromstring(req.text).findall('TERM')
     df = []
@@ -27,6 +27,16 @@ def get_term_codes() -> DataFrame:
                 'term': term.find('OPT').tail,
                 'code': term.attrib.get('code')
             })
+
+    if export_to_sql:
+        try:
+            con = sql.connect(f'{BASE_DB_DIR}/terms.db')
+            DataFrame(df).to_sql(name = 'terms', con=con, if_exists='replace', index=False)
+        except ValueError as e:
+            print(e)
+        finally:
+            con.commit()
+            con.close()
 
     return DataFrame(df)
 
