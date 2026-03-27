@@ -3,6 +3,13 @@
     {
       "source": "/api/(.*)",
       "destination": "/api/index.py"
+<<<<<<< HEAD
+=======
+    },
+    {
+      "source": "/(.*)",
+      "destination": "/frontend/$1"
+>>>>>>> 839d4e33b3d410133f9de7ed03bfcff532ecb6a2
     }
   ]
 }
