@@ -11,6 +11,7 @@ function App() {
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState(null)
   const [expandedCourses, setExpandedCourses] = useState(new Set())
+  const [syllabusLookup, setSyllabusLookup] = useState({})
 
   useEffect(() => {
     const fetchTerms = async () => {
@@ -74,6 +75,7 @@ function App() {
 
       setResults(normalizeResults(json))
       setExpandedCourses(new Set())
+      setSyllabusLookup({})
     } catch (err) {
       setError(err.message ?? 'Unable to fetch')
     } finally {
@@ -126,6 +128,53 @@ function App() {
 
   const courseEntries = Object.entries(results).sort()
 
+  const getSyllabusKey = (course) => `${course.term}-${course.crn}`
+
+  const fetchSyllabus = async (course) => {
+    const key = getSyllabusKey(course)
+
+    setSyllabusLookup((prev) => ({
+      ...prev,
+      [key]: { status: 'loading', message: 'Checking syllabus...' },
+    }))
+
+    try {
+      const params = new URLSearchParams({ term_code: course.term, crn: course.crn })
+      const res = await fetch(`/api/syllabus?${params.toString()}`)
+      if (!res.ok) {
+        throw new Error(`Syllabus lookup failed ${res.status}`)
+      }
+
+      const data = await res.json()
+      if (data.syllabus_url) {
+        setSyllabusLookup((prev) => ({
+          ...prev,
+          [key]: {
+            status: 'available',
+            message: data.message || 'Syllabus available',
+            url: data.syllabus_url,
+          },
+        }))
+      } else {
+        setSyllabusLookup((prev) => ({
+          ...prev,
+          [key]: {
+            status: 'none',
+            message: data.message || 'No syllabus posted',
+          },
+        }))
+      }
+    } catch (err) {
+      setSyllabusLookup((prev) => ({
+        ...prev,
+        [key]: {
+          status: 'error',
+          message: err.message || 'Unable to fetch syllabus',
+        },
+      }))
+    }
+  }
+
   return (
     <div className="app">
       <div className="header">
@@ -137,13 +186,28 @@ function App() {
         <section className="search-section">
           <div className="search-inputs">
             <div className="input-group">
-              <label htmlFor="query">Course Search</label>
+              <div className="label-with-tooltip">
+                <label htmlFor="query">Course Search</label>
+                <div className="tooltip-wrap">
+                  <button
+                    type="button"
+                    className="tooltip-trigger"
+                    aria-label="Search help"
+                    aria-describedby="query-tooltip"
+                  >
+                    ?
+                  </button>
+                  <div id="query-tooltip" role="tooltip" className="tooltip-text">
+                    Type CRN, CRS, course title, instructor, or any combination.
+                  </div>
+                </div>
+              </div>
               <input
                 id="query"
                 value={query}
                 onChange={(e) => setQuery(e.target.value)}
                 onKeyDown={onEnter}
-                placeholder="e.g., MATH, Linear Algebra, Data Science"
+                placeholder="Search courses"
               />
             </div>
 
@@ -230,36 +294,73 @@ function App() {
                   </a>
 
                   <div className="course-instances">
-                    {displayInstances.map((course, idx) => (
-                      <a
-                        key={`${course.crn}-${course.term}`}
-                        className="course-card course-link"
-                        href={course.course_page || `https://courses.rice.edu/courses/courses/!SWKSCAT.cat?p_action=COURSE&p_term=${course.term}&p_crn=${course.crn}`}
-                        target="_blank"
-                        rel="noreferrer"
-                      >
-                        <div className="card-meta">
-                          <span className="term">{getTermLabel(course.term)}</span>
-                          <span className="crn">CRN: {course.crn}</span>
-                          {course.credits && <span className="credits">{course.credits} credits</span>}
-                        </div>
+                    {displayInstances.map((course) => {
+                      const syllabusState = syllabusLookup[getSyllabusKey(course)]
+                      const coursePageUrl = course.course_page || `https://courses.rice.edu/courses/courses/!SWKSCAT.cat?p_action=COURSE&p_term=${course.term}&p_crn=${course.crn}`
 
-                        <div className="course-details">
-                          {course.instructors && (
-                            <div className="detail-row">
-                              <strong>Instructors:</strong>
-                              <span>{formatInstructors(course.instructors)}</span>
-                            </div>
+                      return (
+                        <div
+                          key={`${course.crn}-${course.term}`}
+                          className="course-card"
+                        >
+                          <div className="card-meta">
+                            <span className="term">{getTermLabel(course.term)}</span>
+                            <span className="crn">CRN: {course.crn}</span>
+                            {course.credits && <span className="credits">{course.credits} credits</span>}
+                          </div>
+
+                          <div className="course-details">
+                            {course.instructors && (
+                              <div className="detail-row">
+                                <strong>Instructors:</strong>
+                                <span>{formatInstructors(course.instructors)}</span>
+                              </div>
+                            )}
+                            {course.meeting_times && (
+                              <div className="detail-row">
+                                <strong>Times:</strong>
+                                <span>{course.meeting_times}</span>
+                              </div>
+                            )}
+                          </div>
+
+                          <div className="card-actions">
+                            <a
+                              href={coursePageUrl}
+                              target="_blank"
+                              rel="noreferrer"
+                              className="course-page-link"
+                            >
+                              Course page
+                            </a>
+                            <button
+                              type="button"
+                              className="syllabus-btn"
+                              onClick={() => fetchSyllabus(course)}
+                              disabled={syllabusState?.status === 'loading'}
+                            >
+                              {syllabusState?.status === 'loading' ? 'Checking...' : 'Get syllabus'}
+                            </button>
+                          </div>
+
+                          {syllabusState?.status === 'available' && syllabusState.url && (
+                            <p className="syllabus-status success">
+                              <a href={syllabusState.url} target="_blank" rel="noreferrer">
+                                Open syllabus
+                              </a>
+                            </p>
                           )}
-                          {course.meeting_times && (
-                            <div className="detail-row">
-                              <strong>Times:</strong>
-                              <span>{course.meeting_times}</span>
-                            </div>
+
+                          {syllabusState?.status === 'none' && (
+                            <p className="syllabus-status neutral">{syllabusState.message}</p>
+                          )}
+
+                          {syllabusState?.status === 'error' && (
+                            <p className="syllabus-status error">{syllabusState.message}</p>
                           )}
                         </div>
-                      </a>
-                    ))}
+                      )
+                    })}
                   </div>
                 </div>
               )

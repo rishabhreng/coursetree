@@ -2,10 +2,12 @@ import os
 import re
 from collections import defaultdict
 from typing import Dict, List, Optional
+from xml.etree import ElementTree as ET
 
 from fastapi import FastAPI, HTTPException, Depends
 from fastapi.middleware.cors import CORSMiddleware
 import sqlite3 as sql
+import requests as rq
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 API_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -78,7 +80,14 @@ class Term(BaseModel):
     term: str
 
 
+class SyllabusResponse(BaseModel):
+    syllabus_url: Optional[str] = None
+    message: str
+
+
 CoursesResponse = Dict[str, List[Course]]
+
+META_COURSES_URL = 'https://courses.rice.edu/courses/!SWKSCAT.info'
 
 app = FastAPI()
 
@@ -225,6 +234,15 @@ def _group_courses(rows: List[sql.Row], db: sql.Connection) -> CoursesResponse:
     return dict(grouped)
 
 
+def _get_course_syllabus(term_code: str, crn: str) -> Optional[str]:
+    req = rq.get(f"{META_COURSES_URL}?action=SYLLABUS&term={term_code}&crn={crn}", timeout=15)
+    req.raise_for_status()
+    res = ET.fromstring(req.text)
+    if res.attrib.get('has-syllabus') != 'yes':
+        return None
+    return res.attrib.get('doc-url')
+
+
 
 @app.get("/api/courses/", response_model=CoursesResponse)
 def search_courses(
@@ -285,3 +303,22 @@ def get_terms() -> List[Term]:
         return [Term(code=row['code'], term=row['term']) for row in rows]
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to fetch terms: {str(e)}")
+
+
+@app.get("/api/syllabus", response_model=SyllabusResponse)
+def get_syllabus(term_code: str, crn: str) -> SyllabusResponse:
+    """Get syllabus link for a course instance, if available."""
+    if not re.match(r'^\d{6}$', term_code):
+        raise HTTPException(status_code=400, detail="term_code must be a 6-digit code")
+    if not re.match(r'^\d{5}$', crn):
+        raise HTTPException(status_code=400, detail="crn must be a 5-digit value")
+
+    try:
+        syllabus_url = _get_course_syllabus(term_code, crn)
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Failed to fetch syllabus data: {str(e)}")
+
+    if syllabus_url:
+        return SyllabusResponse(syllabus_url=syllabus_url, message="Syllabus available")
+
+    return SyllabusResponse(syllabus_url=None, message="No syllabus posted")
