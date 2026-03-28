@@ -230,7 +230,7 @@ def _group_courses(rows: List[sql.Row], db: sql.Connection) -> CoursesResponse:
 def search_courses(
     q: str, 
     term_code: str = DEFAULT_COURSE_TERM_CODE, 
-    top_n_results: int = 15,
+    top_n_results: int = 50,
     db: sql.Connection = Depends(get_db)
 ) -> CoursesResponse:
     try:
