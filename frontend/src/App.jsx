@@ -7,6 +7,7 @@ function App() {
   const [query, setQuery] = useState('')
   const [termCode, setTermCode] = useState('all')
   const [terms, setTerms] = useState([])
+  const [subjects, setSubjects] = useState([])
   const [results, setResults] = useState({})
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState(null)
@@ -25,7 +26,19 @@ function App() {
       }
     }
 
+    const fetchSubjects = async () => {
+      try {
+        const res = await fetch('/api/subjects')
+        if (!res.ok) throw new Error(`Failed to fetch subjects: ${res.status}`)
+        const data = await res.json()
+        setSubjects(Array.isArray(data) ? data : [])
+      } catch (err) {
+        console.error('Error fetching subjects:', err)
+      }
+    }
+
     fetchTerms()
+    fetchSubjects()
   }, [])
 
   // Convert term code to readable format (e.g., 202710 -> Fall 2026)
@@ -88,6 +101,18 @@ function App() {
       doSearch()
     }
   }
+
+  const handleSubjectClick = (subjectCode) => {
+    setQuery(subjectCode)
+  }
+
+  useEffect(() => {
+    const timerId = setTimeout(() => {
+      doSearch()
+    }, 10)
+
+    return () => clearTimeout(timerId)
+  }, [query, termCode])
 
   const toggleExpanded = (courseCode) => {
     const newExpanded = new Set(expandedCourses)
@@ -212,7 +237,36 @@ function App() {
             </div>
 
             <div className="input-group">
-              <label htmlFor="term">Term</label>
+              <div className="label-with-tooltip">
+                <label htmlFor="term">Term</label>
+                <div className="tooltip-wrap">
+                  <button
+                    type="button"
+                    className="tooltip-trigger subjects-info-btn"
+                    aria-label="Subject codes reference"
+                    aria-describedby="subjects-tooltip"
+                  >
+                    ⊕
+                  </button>
+                  <div id="subjects-tooltip" role="tooltip" className="tooltip-text subjects-tooltip">
+                    <strong>Subject Codes:</strong>
+                    <div className="subject-codes-list">
+                      {subjects.map((subject) => (
+                        <div
+                          key={subject.code}
+                          className="subject-code-item"
+                          onClick={() => {
+                            handleSubjectClick(subject.code)
+                          }}
+                        >
+                          <span className="code">{subject.code}</span>
+                          <span className="meaning">{subject.subject}</span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              </div>
               <select
                 id="term"
                 value={termCode}
@@ -238,7 +292,6 @@ function App() {
             </button>
           </div>
 
-          {loading && <p className="status loading">Loading...</p>}
           {error && <p className="status error">❌ {error}</p>}
           {!loading && courseEntries.length === 0 && query && !error && (
             <p className="status empty">No courses found for your search</p>

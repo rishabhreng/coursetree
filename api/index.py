@@ -80,6 +80,11 @@ class Term(BaseModel):
     term: str
 
 
+class Subject(BaseModel):
+    code: str
+    subject: str
+
+
 class SyllabusResponse(BaseModel):
     syllabus_url: Optional[str] = None
     message: str
@@ -100,18 +105,34 @@ app.add_middleware(
 )
 
 VALID_SUBJECTS = set()
+SUBJECT_NAMES = {}
 with sql.connect(f"file:{SUBJECTS_DB_PATH}?mode=ro", uri=True) as con:
     cur = con.cursor()
 
-# Find all tables that look like 'subjects_XXXXXX'
-cur.execute("SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'subjects_%'")
-subject_tables = [row[0] for row in cur.fetchall()]
+    # Find all tables that look like 'subjects_XXXXXX'
+    cur.execute("SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'subjects_%'")
+    subject_tables = [row[0] for row in cur.fetchall()]
 
-for table in subject_tables:
-    # Add every 4-letter code found to our global set
-    rows = cur.execute(f"SELECT code FROM {table}").fetchall()
-    for r in rows:
-        VALID_SUBJECTS.add(r[0].upper())
+    for table in subject_tables:
+        # Get all columns to understand what data is available
+        cur.execute(f"PRAGMA table_info({table})")
+        columns = [col[1] for col in cur.fetchall()]
+        
+        # Fetch both code and subject name
+        if 'subject' in columns and 'code' in columns:
+            rows = cur.execute(f"SELECT DISTINCT code, subject FROM {table}").fetchall()
+            for code, subject in rows:
+                code_upper = code.upper()
+                VALID_SUBJECTS.add(code_upper)
+                SUBJECT_NAMES[code_upper] = subject
+        else:
+            # Fallback if only code is available
+            rows = cur.execute(f"SELECT DISTINCT code FROM {table}").fetchall()
+            for r in rows:
+                code_upper = r[0].upper()
+                VALID_SUBJECTS.add(code_upper)
+                if code_upper not in SUBJECT_NAMES:
+                    SUBJECT_NAMES[code_upper] = code_upper
 
 # --- DATABASE DEPENDENCY ---
 def get_db():
@@ -303,6 +324,19 @@ def get_terms() -> List[Term]:
         return [Term(code=row['code'], term=row['term']) for row in rows]
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to fetch terms: {str(e)}")
+
+
+@app.get("/api/subjects", response_model=List[Subject])
+def get_subjects() -> List[Subject]:
+    """Get all available subject codes with their full subject names."""
+    try:
+        subjects = [
+            Subject(code=code, subject=SUBJECT_NAMES.get(code, code))
+            for code in sorted(VALID_SUBJECTS)
+        ]
+        return subjects
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to fetch subjects: {str(e)}")
 
 
 @app.get("/api/syllabus", response_model=SyllabusResponse)
