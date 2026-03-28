@@ -106,6 +106,11 @@ function App() {
     setQuery(subjectCode)
   }
 
+  const handleQueryChange = (e) => {
+    const value = e.target.value.replace(/[^a-zA-Z0-9\- ]/g, '')
+    setQuery(value)
+  }
+
   useEffect(() => {
     const timerId = setTimeout(() => {
       doSearch()
@@ -230,7 +235,7 @@ function App() {
               <input
                 id="query"
                 value={query}
-                onChange={(e) => setQuery(e.target.value)}
+                onChange={handleQueryChange}
                 onKeyDown={onEnter}
                 placeholder="Search courses"
               />
@@ -283,13 +288,6 @@ function App() {
                 )}
               </select>
             </div>
-
-            <button
-              className="search-btn"
-              onClick={doSearch}
-            >
-              Search
-            </button>
           </div>
 
           {error && <p className="status error">❌ {error}</p>}

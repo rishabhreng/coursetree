@@ -176,7 +176,9 @@ def _make_fts_query(q: str) -> str:
 
     # CASE 5: general fuzzy search
     else:
-        words = q.split()
+        # Replace hyphens with spaces to handle hyphenated names/terms
+        q_normalized = q.replace('-', ' ')
+        words = q_normalized.split()
         if not words: return ""
         # Standard multi-word prefix search across all columns
         return " AND ".join([f"{w}*" for w in words])
