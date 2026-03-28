@@ -10,9 +10,14 @@ function App() {
   const [subjects, setSubjects] = useState([])
   const [results, setResults] = useState({})
   const [loading, setLoading] = useState(false)
+  const [loadingMore, setLoadingMore] = useState(false)
   const [error, setError] = useState(null)
   const [expandedCourses, setExpandedCourses] = useState(new Set())
   const [syllabusLookup, setSyllabusLookup] = useState({})
+  const [hasMore, setHasMore] = useState(false)
+  const [currentOffset, setCurrentOffset] = useState(0)
+  const [lastQuery, setLastQuery] = useState('')
+  const [lastTermCode, setLastTermCode] = useState('')
 
   useEffect(() => {
     const fetchTerms = async () => {
@@ -70,6 +75,8 @@ function App() {
   const doSearch = async () => {
     if (!query.trim()) {
       setResults({})
+      setHasMore(false)
+      setCurrentOffset(0)
       return
     }
 
@@ -77,7 +84,7 @@ function App() {
     setError(null)
 
     try {
-      const searchParams = new URLSearchParams({ q: query.trim() })
+      const searchParams = new URLSearchParams({ q: query.trim(), offset: '0', top_n_results: '50' })
       if (termCode.trim()) {
         searchParams.set('term_code', termCode.trim())
       }
@@ -86,13 +93,62 @@ function App() {
       if (!res.ok) throw new Error(`Search failed ${res.status}`)
       const json = await res.json()
 
-      setResults(normalizeResults(json))
+      const normalized = normalizeResults(json)
+      setResults(normalized)
       setExpandedCourses(new Set())
       setSyllabusLookup({})
+
+      // Check if we got exactly 50 results (meaning there might be more)
+      const totalCourses = Object.values(normalized).flat().length
+      setHasMore(totalCourses === 50)
+      setCurrentOffset(50)
+      setLastQuery(query.trim())
+      setLastTermCode(termCode.trim())
     } catch (err) {
       setError(err.message ?? 'Unable to fetch')
     } finally {
       setLoading(false)
+    }
+  }
+
+  const loadMore = async () => {
+    if (!lastQuery) return
+
+    setLoadingMore(true)
+    setError(null)
+
+    try {
+      const searchParams = new URLSearchParams({ q: lastQuery, offset: currentOffset.toString(), top_n_results: '50' })
+      if (lastTermCode) {
+        searchParams.set('term_code', lastTermCode)
+      }
+
+      const res = await fetch(`/api/courses/?${searchParams.toString()}`)
+      if (!res.ok) throw new Error(`Search failed ${res.status}`)
+      const json = await res.json()
+
+      const newResults = normalizeResults(json)
+
+      // Merge results instead of replacing them
+      const mergedResults = { ...results }
+      for (const [courseCode, courseInstances] of Object.entries(newResults)) {
+        if (mergedResults[courseCode]) {
+          mergedResults[courseCode] = [...mergedResults[courseCode], ...courseInstances]
+        } else {
+          mergedResults[courseCode] = courseInstances
+        }
+      }
+
+      setResults(mergedResults)
+
+      // Check if we got exactly 50 results (meaning there might be more)
+      const totalNewCourses = Object.values(newResults).flat().length
+      setHasMore(totalNewCourses === 50)
+      setCurrentOffset(currentOffset + 50)
+    } catch (err) {
+      setError(err.message ?? 'Unable to fetch more')
+    } finally {
+      setLoadingMore(false)
     }
   }
 
@@ -129,9 +185,35 @@ function App() {
     setExpandedCourses(newExpanded)
   }
 
-  // Format instructors: split by common delimiters and join nicely
+  // Format meeting times: split by common delimiters and return array
+  const formatMeetingTimes = (timesStr) => {
+    if (!timesStr || timesStr === 'TBA' || timesStr === '[]') return ['TBA']
+
+    const trimmed = timesStr.trim()
+
+    // Parse JSON-like arrays, e.g. ["MWF 10:00 AM - 11:00 AM", "TR 2:00 PM - 3:00 PM"]
+    if (trimmed.startsWith('[') && trimmed.endsWith(']')) {
+      try {
+        const parsed = JSON.parse(trimmed)
+        if (Array.isArray(parsed)) {
+          const times = parsed.map((time) => String(time).trim()).filter(Boolean)
+          return times.length > 0 ? times : ['TBA']
+        }
+      } catch {
+        // Fall through to delimiter-based parsing below.
+      }
+    }
+
+    // If it looks like comma or semicolon separated values, split and rejoin
+    const timesList = timesStr
+      .split(/,|;\s*/)
+      .map(s => s.trim())
+      .filter(s => s.length > 0)
+
+    return timesList.length > 0 ? timesList : ['TBA']
+  }
   const formatInstructors = (instructorStr) => {
-    if (!instructorStr || instructorStr === 'TBA' || instructorStr === '[]') return 'TBA'
+    if (!instructorStr || instructorStr === 'TBA' || instructorStr === '[]') return ['TBA']
 
     const trimmed = instructorStr.trim()
 
@@ -141,7 +223,7 @@ function App() {
         const parsed = JSON.parse(trimmed)
         if (Array.isArray(parsed)) {
           const names = parsed.map((name) => String(name).trim()).filter(Boolean)
-          return names.length > 0 ? names.join(', ') : 'TBA'
+          return names.length > 0 ? names : ['TBA']
         }
       } catch {
         // Fall through to delimiter-based parsing below.
@@ -153,7 +235,7 @@ function App() {
       .map(s => s.trim())
       .filter(s => s.length > 0)
 
-    return instructors.length > 0 ? instructors.join(', ') : 'TBA'
+    return instructors.length > 0 ? instructors : ['TBA']
   }
 
   const courseEntries = Object.entries(results).sort()
@@ -185,6 +267,8 @@ function App() {
             url: data.syllabus_url,
           },
         }))
+        // Automatically open the syllabus in a new tab
+        window.open(data.syllabus_url, '_blank')
       } else {
         setSyllabusLookup((prev) => ({
           ...prev,
@@ -228,7 +312,7 @@ function App() {
                     ?
                   </button>
                   <div id="query-tooltip" role="tooltip" className="tooltip-text">
-                    Type CRN, CRS, course title, instructor, or any combination.
+                    Type CRN (12345), CRS (ABCD 123), course title (Intro to Life I), instructor (John Doe), or any combination.
                   </div>
                 </div>
                 <div className="tooltip-wrap">
@@ -355,20 +439,28 @@ function App() {
                           <div className="card-meta">
                             <span className="term">{getTermLabel(course.term)}</span>
                             <span className="crn">CRN: {course.crn}</span>
-                            {course.credits && <span className="credits">{course.credits} credits</span>}
+                            {course.credits && <span className="credits">{course.credits} {parseInt(course.credits) === 1 && !course.credits.includes(' ') ? 'CREDIT' : 'CREDITS'}</span>}
                           </div>
 
                           <div className="course-details">
                             {course.instructors && (
                               <div className="detail-row">
                                 <strong>Instructors:</strong>
-                                <span>{formatInstructors(course.instructors)}</span>
+                                <div className="detail-items">
+                                  {formatInstructors(course.instructors).map((instructor, idx) => (
+                                    <div key={idx} className="detail-item">{instructor}</div>
+                                  ))}
+                                </div>
                               </div>
                             )}
                             {course.meeting_times && (
                               <div className="detail-row">
                                 <strong>Times:</strong>
-                                <span>{course.meeting_times}</span>
+                                <div className="detail-items">
+                                  {formatMeetingTimes(course.meeting_times).map((time, idx) => (
+                                    <div key={idx} className="detail-item">{time}</div>
+                                  ))}
+                                </div>
                               </div>
                             )}
                           </div>
@@ -380,7 +472,7 @@ function App() {
                               rel="noreferrer"
                               className="course-page-link"
                             >
-                              Course page
+                              Course Page
                             </a>
                             <button
                               type="button"
@@ -393,11 +485,7 @@ function App() {
                           </div>
 
                           {syllabusState?.status === 'available' && syllabusState.url && (
-                            <p className="syllabus-status success">
-                              <a href={syllabusState.url} target="_blank" rel="noreferrer">
-                                Open syllabus
-                              </a>
-                            </p>
+                            <p className="syllabus-status success">Syllabus opened in new tab</p>
                           )}
 
                           {syllabusState?.status === 'none' && (
@@ -415,6 +503,18 @@ function App() {
               )
             })}
           </div>
+
+          {hasMore && !loading && (
+            <div className="load-more-container">
+              <button
+                className="load-more-btn"
+                onClick={loadMore}
+                disabled={loadingMore}
+              >
+                {loadingMore ? 'Loading more...' : 'Load More Results'}
+              </button>
+            </div>
+          )}
         </section>
       </div>
 

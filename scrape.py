@@ -126,7 +126,7 @@ def get_course_info(term_code: str, school_code: str) -> DataFrame:
             'crs': cells[1].text,
             'title': cells[3].text, #ignore "part of term" entry
             'instructors': json.dumps([instructor.text for instructor in cells[4].find_all('a')]),
-            'meeting_times': cells[5].find('div').text.strip(), # ignore final exam time
+            'meeting_times': json.dumps(list(cells[5].find('div', class_='mtg-clas').stripped_strings)), # ignore final exam time
             'credits': cells[6].text,
             'course_page': f"{BASE_COURSES_URL}{cells[0].a['href']}"
         })
@@ -174,6 +174,60 @@ def construct_course_db():
     for term_code in term_codes['code']:
         get_all_courses_for_term(term_code, export_to_sql=True)
 
+def build_fts_index():
+    """Build the global_search FTS5 virtual table from all course tables."""
+    print("Building global_search FTS5 index...")
+    conn = sql.connect(f'{BASE_DB_DIR}/courses.db')
+    cursor = conn.cursor()
+    
+    try:
+        # Drop existing FTS table if it exists
+        cursor.execute("DROP TABLE IF EXISTS global_search")
+        print("Dropped existing global_search table")
+        
+        # Create FTS5 virtual table
+        cursor.execute("""
+            CREATE VIRTUAL TABLE global_search USING fts5(
+                term,
+                crn,
+                crs,
+                title,
+                instructors,
+                meeting_times,
+                credits,
+                course_page
+            )
+        """)
+        print("Created global_search FTS5 table")
+        
+        # Get all course term tables
+        cursor.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'courses_%'"
+        )
+        tables = [row[0] for row in cursor.fetchall()]
+        print(f"Found {len(tables)} course term table(s)")
+        
+        # Populate FTS table from all course tables
+        total_inserted = 0
+        for table in sorted(tables):
+            cursor.execute(f"""
+                INSERT INTO global_search (term, crn, crs, title, instructors, meeting_times, credits, course_page)
+                SELECT ?, crn, crs, title, instructors, meeting_times, credits, course_page FROM {table}
+            """, (table,))
+            rows_inserted = cursor.rowcount
+            total_inserted += rows_inserted
+            print(f"  Inserted {rows_inserted} rows from {table}")
+        
+        conn.commit()
+        print(f"✓ Successfully built global_search FTS index with {total_inserted} total rows")
+        
+    except Exception as e:
+        print(f"✗ Error building FTS index: {e}")
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
 if __name__ == "__main__":
     # get_all_courses_for_term('202730', export_to_sql=True)
     # construct_subject_code_db()
@@ -181,4 +235,6 @@ if __name__ == "__main__":
     # construct_school_db()
     # print("Finished constructing school DB")
     construct_course_db()
+    build_fts_index()
+    print("Done!")
     # # print("Finished constructing course DB")

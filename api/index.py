@@ -272,6 +272,7 @@ def search_courses(
     q: str, 
     term_code: str = DEFAULT_COURSE_TERM_CODE, 
     top_n_results: int = 50,
+    offset: int = 0,
     db: sql.Connection = Depends(get_db)
 ) -> CoursesResponse:
     try:
@@ -295,14 +296,15 @@ def search_courses(
         if _is_specific_course_query(q):
             sql_query += (
                 " ORDER BY CAST(REPLACE(term, 'courses_', '') AS INTEGER) DESC, "
-                "bm25(global_search) ASC LIMIT ?"
+                "bm25(global_search) ASC LIMIT ? OFFSET ?"
             )
         else:
             sql_query += (
                 " ORDER BY bm25(global_search) ASC, "
-                "CAST(REPLACE(term, 'courses_', '') AS INTEGER) DESC LIMIT ?"
+                "CAST(REPLACE(term, 'courses_', '') AS INTEGER) DESC LIMIT ? OFFSET ?"
             )
         params.append(top_n_results)
+        params.append(offset)
         print(f"Final SQL Query: '{sql_query}' with params {params}")
         cur = db.cursor()
         rows = cur.execute(sql_query, tuple(params)).fetchall()
