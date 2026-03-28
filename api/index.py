@@ -8,9 +8,45 @@ from fastapi.middleware.cors import CORSMiddleware
 import sqlite3 as sql
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-DB_PATH = os.path.join(BASE_DIR, 'courses.db')
-TERMS_DB_PATH = os.path.join(BASE_DIR, 'terms.db')
-print(f"Checking DB at: {DB_PATH}")
+API_DIR = os.path.dirname(os.path.abspath(__file__))
+
+
+def _resolve_db_path(filename: str) -> str:
+    candidates = [
+        os.path.join(BASE_DIR, filename),
+        os.path.join(API_DIR, filename),
+        os.path.join(os.getcwd(), filename),
+    ]
+    for path in candidates:
+        if os.path.exists(path):
+            return path
+    return candidates[0]
+
+
+def _validate_sqlite_path(path: str, label: str) -> str:
+    if not os.path.exists(path):
+        raise RuntimeError(f"{label} database file not found at {path}")
+
+    with open(path, 'rb') as f:
+        header = f.read(64)
+
+    if header.startswith(b'SQLite format 3\x00'):
+        return path
+
+    # Git LFS pointer files are plain text and often show up in serverless deploys.
+    if header.startswith(b'version https://git-lfs.github.com/spec/v1'):
+        raise RuntimeError(
+            f"{label} at {path} is a Git LFS pointer, not a SQLite file. "
+            "Ensure Vercel has access to actual LFS objects or commit this DB directly."
+        )
+
+    raise RuntimeError(f"{label} at {path} is not a valid SQLite database file")
+
+
+DB_PATH = _validate_sqlite_path(_resolve_db_path('courses.db'), 'Courses')
+TERMS_DB_PATH = _validate_sqlite_path(_resolve_db_path('terms.db'), 'Terms')
+SUBJECTS_DB_PATH = _validate_sqlite_path(_resolve_db_path('subjects.db'), 'Subjects')
+print(f"Using courses DB at: {DB_PATH}")
 try:
     from rapidfuzz import fuzz
 except ImportError:
@@ -55,7 +91,7 @@ app.add_middleware(
 )
 
 VALID_SUBJECTS = set()
-with sql.connect('subjects.db') as con:
+with sql.connect(f"file:{SUBJECTS_DB_PATH}?mode=ro", uri=True) as con:
     cur = con.cursor()
 
 # Find all tables that look like 'subjects_XXXXXX'
@@ -230,8 +266,10 @@ def search_courses(
         cur = db.cursor()
         rows = cur.execute(sql_query, tuple(params)).fetchall()
         return _group_courses(rows, db)
+    except sql.Error as e:
+        raise HTTPException(status_code=500, detail=f"Database query failed: {str(e)}")
     except Exception as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=500, detail=f"Unexpected server error: {str(e)}")
 
 
 @app.get("/api/terms", response_model=List[Term])
