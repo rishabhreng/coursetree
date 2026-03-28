@@ -231,19 +231,6 @@ function App() {
                     Type CRN, CRS, course title, instructor, or any combination.
                   </div>
                 </div>
-              </div>
-              <input
-                id="query"
-                value={query}
-                onChange={handleQueryChange}
-                onKeyDown={onEnter}
-                placeholder="Search courses"
-              />
-            </div>
-
-            <div className="input-group">
-              <div className="label-with-tooltip">
-                <label htmlFor="term">Term</label>
                 <div className="tooltip-wrap">
                   <button
                     type="button"
@@ -272,6 +259,17 @@ function App() {
                   </div>
                 </div>
               </div>
+              <input
+                id="query"
+                value={query}
+                onChange={handleQueryChange}
+                onKeyDown={onEnter}
+                placeholder="Search courses"
+              />
+            </div>
+
+            <div className="input-group">
+              <label htmlFor="term">Term</label>
               <select
                 id="term"
                 value={termCode}
@@ -419,6 +417,10 @@ function App() {
           </div>
         </section>
       </div>
+
+      <footer className="app-footer">
+        <p>Built by Rishabh Rengarajan, Rice '29</p>
+      </footer>
     </div>
   )
 }

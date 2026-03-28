@@ -559,6 +559,20 @@ body {
   flex: 1;
 }
 
+/* App Footer */
+.app-footer {
+  text-align: center;
+  padding: 5px 5px 5px;
+  color: var(--text-tertiary);
+  font-size: 0.85rem;
+  margin-top: 10px;
+  border-top: 1px solid var(--border);
+}
+
+.app-footer p {
+  margin: 0;
+}
+
 /* Responsive Design */
 @media (max-width: 768px) {
   .header h1 {
