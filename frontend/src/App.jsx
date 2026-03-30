@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { Analytics } from '@vercel/analytics/react'
 import './App.css'
 
 const DEFAULT_TERM_CODE = '202710'
@@ -594,6 +595,7 @@ function App() {
       <footer className="app-footer">
         <p>Built by Rishabh Rengarajan, Rice '29</p>
       </footer>
+      <Analytics />
     </div>
   )
 }
