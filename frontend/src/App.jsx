@@ -14,6 +14,7 @@ function App() {
   const [error, setError] = useState(null)
   const [expandedCourses, setExpandedCourses] = useState(new Set())
   const [syllabusLookup, setSyllabusLookup] = useState({})
+  const [evaluationLookup, setEvaluationLookup] = useState({})
   const [hasMore, setHasMore] = useState(false)
   const [currentOffset, setCurrentOffset] = useState(0)
   const [lastQuery, setLastQuery] = useState('')
@@ -170,7 +171,7 @@ function App() {
   useEffect(() => {
     const timerId = setTimeout(() => {
       doSearch()
-    }, 10)
+    }, 50)
 
     return () => clearTimeout(timerId)
   }, [query, termCode])
@@ -236,6 +237,54 @@ function App() {
       .filter(s => s.length > 0)
 
     return instructors.length > 0 ? instructors : ['TBA']
+  }
+
+  const getEvaluationKey = (course) => `${course.term}-${course.crn}`
+
+  const fetchEvaluation = async (course) => {
+    const key = getEvaluationKey(course)
+
+    setEvaluationLookup((prev) => ({
+      ...prev,
+      [key]: { status: 'loading', message: 'Loading evaluation...' },
+    }))
+
+    try {
+      const subject = course.crs ? course.crs.split(' ')[0] : ''
+      const params = new URLSearchParams({ term: course.term, crn: course.crn, subject })
+      const res = await fetch(`/api/evaluate?${params.toString()}`)
+      if (!res.ok) {
+        throw new Error(`Evaluation lookup failed ${res.status}`)
+      }
+
+      const data = await res.json()
+      if (data.success && data.html) {
+        setEvaluationLookup((prev) => ({
+          ...prev,
+          [key]: {
+            status: 'available',
+            html: data.html,
+            message: 'Evaluation loaded',
+          },
+        }))
+      } else {
+        setEvaluationLookup((prev) => ({
+          ...prev,
+          [key]: {
+            status: 'none',
+            message: data.message || 'No evaluation data found',
+          },
+        }))
+      }
+    } catch (err) {
+      setEvaluationLookup((prev) => ({
+        ...prev,
+        [key]: {
+          status: 'error',
+          message: err.message || 'Unable to fetch evaluation',
+        },
+      }))
+    }
   }
 
   const courseEntries = Object.entries(results).sort()
@@ -482,6 +531,14 @@ function App() {
                             >
                               {syllabusState?.status === 'loading' ? 'Checking...' : 'Get syllabus'}
                             </button>
+                            <button
+                              type="button"
+                              className="evaluation-btn"
+                              onClick={() => fetchEvaluation(course)}
+                              disabled={evaluationLookup[getEvaluationKey(course)]?.status === 'loading'}
+                            >
+                              {evaluationLookup[getEvaluationKey(course)]?.status === 'loading' ? 'Loading...' : 'Get Evaluation'}
+                            </button>
                           </div>
 
                           {syllabusState?.status === 'available' && syllabusState.url && (
@@ -494,6 +551,22 @@ function App() {
 
                           {syllabusState?.status === 'error' && (
                             <p className="syllabus-status error">{syllabusState.message}</p>
+                          )}
+
+                          {evaluationLookup[getEvaluationKey(course)]?.status === 'available' && (
+                            <div className="evaluation-results">
+                              <div
+                                dangerouslySetInnerHTML={{ __html: evaluationLookup[getEvaluationKey(course)]?.html }}
+                              />
+                            </div>
+                          )}
+
+                          {evaluationLookup[getEvaluationKey(course)]?.status === 'none' && (
+                            <p className="evaluation-status neutral">{evaluationLookup[getEvaluationKey(course)]?.message}</p>
+                          )}
+
+                          {evaluationLookup[getEvaluationKey(course)]?.status === 'error' && (
+                            <p className="evaluation-status error">{evaluationLookup[getEvaluationKey(course)]?.message}</p>
                           )}
                         </div>
                       )
