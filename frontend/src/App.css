@@ -547,6 +547,57 @@ body {
   cursor: not-allowed;
 }
 
+.evaluation-btn {
+  padding: 0 16px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: rgba(168, 85, 247, 0.12);
+  color: #ffffff;
+  font-size: 0.88rem;
+  font-weight: 700;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 40px;
+  line-height: 1;
+}
+
+.evaluation-btn:hover:not(:disabled) {
+  background: rgba(168, 85, 247, 0.2);
+  border-color: #a855f7;
+}
+
+.evaluation-btn:disabled {
+  opacity: 0.65;
+  cursor: not-allowed;
+}
+
+.evaluation-results {
+  margin-top: 12px;
+  padding: 12px;
+  background: rgba(168, 85, 247, 0.08);
+  border: 1px solid rgba(168, 85, 247, 0.3);
+  border-radius: 6px;
+  max-height: 600px;
+  overflow-y: auto;
+}
+
+.evaluation-status {
+  margin-top: 6px;
+  font-size: 0.78rem;
+  line-height: 1.3;
+}
+
+.evaluation-status.neutral {
+  color: var(--text-tertiary);
+}
+
+.evaluation-status.error {
+  color: var(--error);
+}
+
 .syllabus-status {
   margin-top: 6px;
   font-size: 0.78rem;

@@ -3,11 +3,15 @@ import re
 from collections import defaultdict
 from typing import Dict, List, Optional
 from xml.etree import ElementTree as ET
+import asyncio
+import json
 
 from fastapi import FastAPI, HTTPException, Depends
 from fastapi.middleware.cors import CORSMiddleware
 import sqlite3 as sql
 import requests as rq
+from bs4 import BeautifulSoup
+from playwright.async_api import async_playwright
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 API_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -99,10 +103,13 @@ app = FastAPI()
 # UPDATE: Added potential production URL
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "https://your-app-name.vercel.app"],
+    allow_origins=["http://localhost:5173", "https://your-app-name.vercel.app", "localhost"],
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Global storage for cookies from Duo authentication
+_stored_cookies = None
 
 VALID_SUBJECTS = set()
 SUBJECT_NAMES = {}
@@ -360,3 +367,190 @@ def get_syllabus(term_code: str, crn: str) -> SyllabusResponse:
         return SyllabusResponse(syllabus_url=syllabus_url, message="Syllabus available")
 
     return SyllabusResponse(syllabus_url=None, message="No syllabus posted")
+
+
+async def _authenticate_with_duo():
+    """Authenticate once with Duo using Playwright and return cookies."""
+    async with async_playwright() as p:
+        print("Launching browser for Duo authentication...")
+        browser = await p.chromium.launch(headless=False)
+        context = await browser.new_context()
+        page = await context.new_page()
+
+        await page.goto("https://esther.rice.edu/")
+
+        # Wait for user to complete Duo authentication
+        await page.wait_for_selector("text='Personal Information'", timeout=0)
+        print("✅ Duo authentication successful!")
+
+        # Extract cookies
+        cookies = await context.cookies()
+        cookie_dict = {cookie['name']: cookie['value'] for cookie in cookies}
+
+        await browser.close()
+        return cookie_dict
+
+
+def _get_valid_term_codes(cookies_dict: dict) -> set:
+    """Fetch and parse valid term codes from Rice's API."""
+    try:
+        session = rq.Session()
+        for name, value in cookies_dict.items():
+            session.cookies.set(name, value)
+        
+        terms_url = "https://esther.rice.edu/selfserve/!swkscmp.ajax?p_data=TERMS"
+        response = session.get(terms_url, timeout=15)
+        
+        # Parse XML response
+        root = ET.fromstring(response.text)
+        term_codes = set()
+        
+        for term_elem in root.findall('.//TERM'):
+            code = term_elem.get('CODE')
+            if code:
+                term_codes.add(code)
+        
+        return term_codes
+    except Exception as e:
+        print(f"Error fetching term codes: {str(e)}")
+        return set()
+
+
+@app.get("/api/evaluate")
+async def get_evaluation(term: str, crn: str, subject: str):
+    """
+    Get course evaluation data. First call triggers Duo auth.
+    Subsequent calls reuse stored cookies.
+    
+    Returns HTML of the results-container div.
+    """
+    global _stored_cookies
+
+    if not re.match(r'^\d{6}$', term):
+        raise HTTPException(status_code=400, detail="term must be a 6-digit code")
+    if not re.match(r'^\d{5}$', crn):
+        raise HTTPException(status_code=400, detail="crn must be a 5-digit value")
+    if not subject or not re.match(r'^[A-Z]{4}$', subject.upper()):
+        raise HTTPException(status_code=400, detail="subject must be 4-letter code")
+    
+    try:
+        # Authenticate if not already done
+        if _stored_cookies is None:
+            _stored_cookies = await _authenticate_with_duo()
+
+        # Check if term is valid
+        valid_terms = _get_valid_term_codes(_stored_cookies)
+        if term not in valid_terms:
+            return {
+                "success": False,
+                "message": "No evaluation data found",
+                "term": term,
+                "crn": crn,
+                "subject": subject.upper()
+            }
+
+        # Query the evaluation website
+        session = rq.Session()
+        for name, value in _stored_cookies.items():
+            session.cookies.set(name, value)
+
+        url = "https://esther.rice.edu/selfserve/swkscmt.main"
+        headers = {
+            "Content-Type": "application/x-www-form-urlencoded",
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+        }
+
+        # First, GET the page to extract the as_fid token
+        get_response = session.get(url, timeout=15)
+        soup = BeautifulSoup(get_response.text, 'html.parser')
+        
+        # Extract as_fid from form or page
+        as_fid = None
+        form = soup.find('form')
+        if form:
+            as_fid_input = form.find('input', {'name': 'as_fid'})
+            if as_fid_input:
+                as_fid = as_fid_input.get('value', '')
+        
+        if not as_fid:
+            # Try to extract from page source
+            import re as regex_module
+            match = regex_module.search(r'as_fid["\']?\s*[:=]\s*["\']?([a-f0-9]{40})', get_response.text)
+            if match:
+                as_fid = match.group(1)
+        
+        print(f"[DEBUG] as_fid: {as_fid}")
+
+        payload = {
+            "p_commentid": "",
+            "p_confirm": "1",
+            "p_term": term,
+            "p_type": "Course",
+            "p_crn": crn
+        }
+        
+        if as_fid:
+            payload["as_fid"] = as_fid
+
+        print(f"[DEBUG] Posting payload: {payload}")
+        response = session.post(url, headers=headers, data=payload, timeout=15)
+        print(f"[DEBUG] Response status: {response.status_code}")
+        print(f"[DEBUG] Response length: {len(response.text)}")
+        print(f"[DEBUG] Response preview: {response.text[:500]}")
+
+        # Check if session is valid
+        if "bmenu.P_MainMnu" not in response.text and "Personal Information" not in response.text:
+            print("[DEBUG] Session appears invalid, re-authenticating...")
+            # Session expired, clear cookies and re-authenticate
+            _stored_cookies = None
+            _stored_cookies = await _authenticate_with_duo()
+            
+            # Retry with new cookies
+            session.cookies.clear()
+            for name, value in _stored_cookies.items():
+                session.cookies.set(name, value)
+            
+            # Get new as_fid
+            get_response = session.get(url, timeout=15)
+            soup = BeautifulSoup(get_response.text, 'html.parser')
+            form = soup.find('form')
+            if form:
+                as_fid_input = form.find('input', {'name': 'as_fid'})
+                if as_fid_input:
+                    payload["as_fid"] = as_fid_input.get('value', '')
+            
+            response = session.post(url, headers=headers, data=payload, timeout=15)
+
+        # Parse and extract results-container div
+        soup = BeautifulSoup(response.text, 'html.parser')
+        results_container = soup.find('div', class_='results-container')
+        
+        print(f"[DEBUG] Found results-container: {results_container is not None}")
+        if not results_container:
+            # Try alternative class names
+            print(f"[DEBUG] Searching for alternative containers...")
+            for div in soup.find_all('div'):
+                classes = div.get('class', [])
+                if 'result' in str(classes).lower() or 'eval' in str(classes).lower():
+                    print(f"[DEBUG] Found potential container with classes: {classes}")
+
+        if results_container:
+            return {
+                "success": True,
+                "html": str(results_container),
+                "term": term,
+                "crn": crn,
+                "subject": subject.upper()
+            }
+        else:
+            return {
+                "success": False,
+                "message": "No evaluation data found",
+                "term": term,
+                "crn": crn,
+                "subject": subject.upper()
+            }
+
+    except Exception as e:
+        print(f"Error in evaluation endpoint: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to fetch evaluation: {str(e)}")
