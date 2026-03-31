@@ -3,8 +3,6 @@ import re
 from collections import defaultdict
 from typing import Dict, List, Optional
 from xml.etree import ElementTree as ET
-import asyncio
-import json
 from urllib.parse import parse_qs, urlparse, unquote
 
 from fastapi import FastAPI, HTTPException, Depends
@@ -14,6 +12,9 @@ import sqlite3 as sql
 import requests as rq
 from bs4 import BeautifulSoup
 from playwright.async_api import async_playwright
+
+from pydantic import BaseModel
+
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 API_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -51,16 +52,8 @@ def _validate_sqlite_path(path: str, label: str) -> str:
     raise RuntimeError(f"{label} at {path} is not a valid SQLite database file")
 
 
-DB_PATH = _validate_sqlite_path(_resolve_db_path('courses.db'), 'Courses')
-TERMS_DB_PATH = _validate_sqlite_path(_resolve_db_path('terms.db'), 'Terms')
-SUBJECTS_DB_PATH = _validate_sqlite_path(_resolve_db_path('subjects.db'), 'Subjects')
-print(f"Using courses DB at: {DB_PATH}")
-try:
-    from rapidfuzz import fuzz
-except ImportError:
-    fuzz = None
-
-from pydantic import BaseModel
+DB_PATH = _validate_sqlite_path(_resolve_db_path('main.db'), 'Main')
+print(f"Using main DB at: {DB_PATH}")
 
 DEFAULT_COURSE_TERM_CODE = '202710'
 
@@ -80,21 +73,17 @@ class Course(BaseModel):
     credits: Optional[str] = None
     course_page: Optional[str] = None
 
-
 class Term(BaseModel):
     code: str
     term: str
-
 
 class Subject(BaseModel):
     code: str
     subject: str
 
-
 class SyllabusResponse(BaseModel):
     syllabus_url: Optional[str] = None
     message: str
-
 
 CoursesResponse = Dict[str, List[Course]]
 
@@ -102,10 +91,9 @@ META_COURSES_URL = 'https://courses.rice.edu/courses/!SWKSCAT.info'
 
 app = FastAPI()
 
-# UPDATE: Added potential production URL
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "https://your-app-name.vercel.app", "localhost"],
+    allow_origins=["*"],
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -116,33 +104,7 @@ _stored_session = None
 
 VALID_SUBJECTS = set()
 SUBJECT_NAMES = {}
-with sql.connect(f"file:{SUBJECTS_DB_PATH}?mode=ro", uri=True) as con:
-    cur = con.cursor()
 
-    # Find all tables that look like 'subjects_XXXXXX'
-    cur.execute("SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'subjects_%'")
-    subject_tables = [row[0] for row in cur.fetchall()]
-
-    for table in subject_tables:
-        # Get all columns to understand what data is available
-        cur.execute(f"PRAGMA table_info({table})")
-        columns = [col[1] for col in cur.fetchall()]
-        
-        # Fetch both code and subject name
-        if 'subject' in columns and 'code' in columns:
-            rows = cur.execute(f"SELECT DISTINCT code, subject FROM {table}").fetchall()
-            for code, subject in rows:
-                code_upper = code.upper()
-                VALID_SUBJECTS.add(code_upper)
-                SUBJECT_NAMES[code_upper] = subject
-        else:
-            # Fallback if only code is available
-            rows = cur.execute(f"SELECT DISTINCT code FROM {table}").fetchall()
-            for r in rows:
-                code_upper = r[0].upper()
-                VALID_SUBJECTS.add(code_upper)
-                if code_upper not in SUBJECT_NAMES:
-                    SUBJECT_NAMES[code_upper] = code_upper
 
 # --- DATABASE DEPENDENCY ---
 def get_db():
@@ -164,7 +126,7 @@ def _clean_query(q: str) -> str:
             return full
     return q
 
-def _make_fts_query(q: str) -> str:
+def _convert_to_fts_query(q: str) -> str:
     """Convert a cleaned query into an FTS5 query string based on its format"""
     # CASE 1: CRN (5 Digits)
     if len(q) == 5 and q.isdigit():
@@ -193,81 +155,30 @@ def _make_fts_query(q: str) -> str:
         # Standard multi-word prefix search across all columns
         return " AND ".join([f"{w}*" for w in words])
 
-
-def _is_specific_course_query(q: str) -> bool:
-    # e.g. MATH354 or MATH 354
-    return bool(re.match(r'^[A-Z]{4}\s*\d{3}$', q))
-
-
-def _term_table_name(term_code: str) -> str:
-    return f"courses_{term_code}"
-
-
-def _term_code_from_table_name(term_value: str) -> str:
-    if term_value.startswith('courses_'):
-        return term_value.split('courses_', 1)[1]
-    return term_value
-
-
-def _normalize_course_page(course_page: Optional[str], term_code: str, crn: str) -> str:
-    fallback = (
-        f"https://courses.rice.edu/courses/courses/!SWKSCAT.cat?"
-        f"p_action=COURSE&p_term={term_code}&p_crn={crn}"
-    )
-    if not course_page:
-        return fallback
-
-    normalized = course_page.replace('https://courses.rice.edu//', 'https://courses.rice.edu/')
-    normalized = normalized.replace('/admweb/!SWKSCAT.cat?', '/courses/courses/!SWKSCAT.cat?')
-    if 'courses.rice.edu' not in normalized:
-        return fallback
-    return normalized
-
-
-def _load_course_details(db: sql.Connection, table_name: str, crn: str) -> Dict[str, Optional[str]]:
-    # Guard dynamic table name to avoid unsafe SQL interpolation.
-    if not re.match(r'^courses_\d{6}$', table_name):
-        return {}
-
-    cur = db.cursor()
-    row = cur.execute(
-        f"SELECT instructors, meeting_times, credits, course_page FROM {table_name} WHERE crn = ? LIMIT 1",
-        (crn,),
-    ).fetchone()
-    return dict(row) if row else {}
-
-
-def _row_to_course(row: sql.Row, db: sql.Connection) -> Course:
+def _row_to_course(row: sql.Row) -> Course:
     row_dict = dict(row)
     term_value = row_dict.get('term', '')
-    term_code = _term_code_from_table_name(term_value)
-    crn = row_dict.get('crn', '')
+    term_code = term_value.split('courses_', 1)[1]
 
-    details = _load_course_details(db, term_value, crn)
-    return Course.model_validate(
-        {
+    data = {
             'term': term_code,
-            'crn': crn,
+            'crn': row_dict.get('crn'),
             'crs': row_dict.get('crs'),
             'title': row_dict.get('title'),
-            'instructors': details.get('instructors') or row_dict.get('instructors') or 'TBA',
-            'meeting_times': details.get('meeting_times'),
-            'credits': details.get('credits'),
-            'course_page': _normalize_course_page(details.get('course_page'), term_code, crn),
+            'instructors': row_dict.get('instructors') or 'TBA',
+            'meeting_times': row_dict.get('meeting_times'),
+            'credits': row_dict.get('credits'),
+            'course_page': row_dict.get('course_page')
         }
-    )
+    return Course(**data)
 
-
-def _group_courses(rows: List[sql.Row], db: sql.Connection) -> CoursesResponse:
+def _group_courses(rows: List[sql.Row]) -> CoursesResponse:
     grouped: Dict[str, List[Course]] = defaultdict(list)
     for row in rows:
-        course = _row_to_course(row, db)
+        course = _row_to_course(row)
         course_code = course.crs or f"{course.term}-{course.crn}"
         grouped[course_code].append(course)
     return dict(grouped)
-
-
-
 
 @app.get("/api/courses/", response_model=CoursesResponse)
 def search_courses(
@@ -280,23 +191,20 @@ def search_courses(
 ) -> CoursesResponse:
     try:
         q = _clean_query(q)
-        print(f"Cleaned query: '{q}'")
-        fts_query = _make_fts_query(q)
-        print(f"Generated FTS query: '{fts_query}'")
+        fts_query = _convert_to_fts_query(q)
 
         if not fts_query:
             return {}
 
-        # --- EXECUTION ---
         sql_query = "SELECT * FROM global_search WHERE global_search MATCH ?"
         params = [fts_query]
 
         if term_code != "all":
             sql_query += " AND term = ?"
-            params.append(_term_table_name(term_code))
+            params.append(f"courses_{term_code}")
 
         # For exact course-code searches, prioritize newest term first.
-        if _is_specific_course_query(q):
+        if re.match(r'^[A-Z]{4}\s*\d{3}$', q):
             sql_query += (
                 " ORDER BY CAST(REPLACE(term, 'courses_', '') AS INTEGER) DESC, "
                 "bm25(global_search) ASC LIMIT ? OFFSET ?"
@@ -316,26 +224,24 @@ def search_courses(
                 )
         params.append(top_n_results)
         params.append(offset)
-        # print(f"Final SQL Query: '{sql_query}' with params {params}")
+        
         cur = db.cursor()
         rows = cur.execute(sql_query, tuple(params)).fetchall()
-        return _group_courses(rows, db)
+        return _group_courses(rows)
     except sql.Error as e:
         raise HTTPException(status_code=500, detail=f"Database query failed: {str(e)}")
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Unexpected server error: {str(e)}")
 
-
 @app.get("/api/terms", response_model=List[Term])
 def get_terms() -> List[Term]:
-    """Get all available terms from the terms database."""
+    """Get all available terms from the database."""
     try:
-        terms_conn = sql.connect(f"file:{TERMS_DB_PATH}?mode=ro", uri=True, check_same_thread=False)
-        terms_conn.row_factory = sql.Row
-        cur = terms_conn.cursor()
-        cur.execute("SELECT code, term FROM terms ORDER BY code DESC")
-        rows = cur.fetchall()
-        terms_conn.close()
+        con = sql.connect(f"file:{DB_PATH}?mode=ro", uri=True, check_same_thread=False)
+        # con.row_factory = sql.Row
+        cur = con.cursor()
+        rows = cur.execute("SELECT code, term FROM terms ORDER BY code DESC").fetchall()
+        con.close()
         return [Term(code=row['code'], term=row['term']) for row in rows]
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to fetch terms: {str(e)}")
@@ -345,14 +251,40 @@ def get_terms() -> List[Term]:
 def get_subjects() -> List[Subject]:
     """Get all available subject codes with their full subject names."""
     try:
+        with sql.connect(f"file:{DB_PATH}?mode=ro", uri=True) as con:
+            cur = con.cursor()
+
+            # Find all tables that look like 'subjects_XXXXXX'
+            cur.execute("SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'subjects_%'")
+            subject_tables = [row[0] for row in cur.fetchall()]
+
+            for table in subject_tables:
+                # Get all columns to understand what data is available
+                cur.execute(f"PRAGMA table_info({table})")
+                columns = [col[1] for col in cur.fetchall()]
+                
+                # Fetch both code and subject name
+                if 'subject' in columns and 'code' in columns:
+                    rows = cur.execute(f"SELECT DISTINCT code, subject FROM {table}").fetchall()
+                    for code, subject in rows:
+                        code_upper = code.upper()
+                        VALID_SUBJECTS.add(code_upper)
+                        SUBJECT_NAMES[code_upper] = subject
+                else:
+                    # Fallback if only code is available
+                    rows = cur.execute(f"SELECT DISTINCT code FROM {table}").fetchall()
+                    for r in rows:
+                        code_upper = r[0].upper()
+                        VALID_SUBJECTS.add(code_upper)
+                        if code_upper not in SUBJECT_NAMES:
+                            SUBJECT_NAMES[code_upper] = code_upper
         subjects = [
             Subject(code=code, subject=SUBJECT_NAMES.get(code, code))
-            for code in sorted(VALID_SUBJECTS)
+                for code in sorted(VALID_SUBJECTS)
         ]
         return subjects
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to fetch subjects: {str(e)}")
-
 
 @app.get("/api/syllabus", response_model=SyllabusResponse)
 async def get_syllabus(term_code: str, crn: str) -> SyllabusResponse:

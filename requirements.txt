@@ -4,5 +4,4 @@ beautifulsoup4
 requests
 uvicorn
 pydantic
-rapidfuzz
 playwright
