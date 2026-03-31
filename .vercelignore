@@ -1,0 +1,5 @@
+api/
+*.py
+requirements.txt
+vercel.json
+.git
