@@ -9,6 +9,7 @@ from urllib.parse import parse_qs, urlparse, unquote
 
 from fastapi import FastAPI, HTTPException, Depends
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 import sqlite3 as sql
 import requests as rq
 from bs4 import BeautifulSoup
@@ -266,14 +267,6 @@ def _group_courses(rows: List[sql.Row], db: sql.Connection) -> CoursesResponse:
     return dict(grouped)
 
 
-def _get_course_syllabus(term_code: str, crn: str) -> Optional[str]:
-    req = rq.get(f"{META_COURSES_URL}?action=SYLLABUS&term={term_code}&crn={crn}", timeout=15)
-    req.raise_for_status()
-    res = ET.fromstring(req.text)
-    if res.attrib.get('has-syllabus') != 'yes':
-        return None
-    return res.attrib.get('doc-url')
-
 
 
 @app.get("/api/courses/", response_model=CoursesResponse)
@@ -323,7 +316,7 @@ def search_courses(
                 )
         params.append(top_n_results)
         params.append(offset)
-        print(f"Final SQL Query: '{sql_query}' with params {params}")
+        # print(f"Final SQL Query: '{sql_query}' with params {params}")
         cur = db.cursor()
         rows = cur.execute(sql_query, tuple(params)).fetchall()
         return _group_courses(rows, db)
@@ -362,22 +355,105 @@ def get_subjects() -> List[Subject]:
 
 
 @app.get("/api/syllabus", response_model=SyllabusResponse)
-def get_syllabus(term_code: str, crn: str) -> SyllabusResponse:
-    """Get syllabus link for a course instance, if available."""
+async def get_syllabus(term_code: str, crn: str) -> SyllabusResponse:
+    """
+    Check if syllabus exists for a course.
+    If it does, return URL to PDF endpoint for display.
+    """
     if not re.match(r'^\d{6}$', term_code):
         raise HTTPException(status_code=400, detail="term_code must be a 6-digit code")
     if not re.match(r'^\d{5}$', crn):
         raise HTTPException(status_code=400, detail="crn must be a 5-digit value")
 
     try:
-        syllabus_url = _get_course_syllabus(term_code, crn)
+        # Fast check first: see if syllabus exists without authentication
+        try:
+            metadata_url = f"{META_COURSES_URL}?action=SYLLABUS&term={term_code}&crn={crn}"
+            metadata_response = rq.get(metadata_url, timeout=15)
+            metadata_response.raise_for_status()
+            
+            metadata = ET.fromstring(metadata_response.text)
+            if metadata.attrib.get('has-syllabus') != 'yes':
+                return SyllabusResponse(syllabus_url=None, message="No syllabus posted")
+        except Exception as e:
+            print(f"Warning: Could not check syllabus metadata: {str(e)}")
+            return SyllabusResponse(syllabus_url=None, message="No syllabus posted")
+        
+        # Syllabus exists, return URL to PDF endpoint
+        pdf_url = f"/api/syllabus-pdf?term_code={term_code}&crn={crn}"
+        return SyllabusResponse(syllabus_url=pdf_url, message="Syllabus available")
     except Exception as e:
-        raise HTTPException(status_code=502, detail=f"Failed to fetch syllabus data: {str(e)}")
+        raise HTTPException(status_code=502, detail=f"Failed to check syllabus: {str(e)}")
 
-    if syllabus_url:
-        return SyllabusResponse(syllabus_url=syllabus_url, message="Syllabus available")
 
-    return SyllabusResponse(syllabus_url=None, message="No syllabus posted")
+@app.get("/api/syllabus-pdf")
+async def get_syllabus_pdf(term_code: str, crn: str):
+    """
+    Fetch and stream the actual syllabus PDF.
+    Endpoint returns binary PDF directly (no headers, just raw PDF data).
+    Also saves a local copy for debugging and handles session re-authentication.
+    """
+    global _stored_cookies, _stored_session
+    
+    if not re.match(r'^\d{6}$', term_code):
+        raise HTTPException(status_code=400, detail="term_code must be a 6-digit code")
+    if not re.match(r'^\d{5}$', crn):
+        raise HTTPException(status_code=400, detail="crn must be a 5-digit value")
+
+    try:
+        # Authenticate if not already done (shared with evaluations)
+        if _stored_cookies is None or _stored_session is None:
+            _stored_cookies = await _authenticate_with_duo()
+        
+        # Use the stored session which has Duo authentication cookies
+        session = _stored_session
+        
+        # Fetch the PDF from authenticated endpoint
+        url = "https://esther.rice.edu/selfserve/!bwzkpsyl.v_viewDoc"
+        params = {
+            'term': term_code,
+            'type': 'SYLLABUS',
+            'crn': crn
+        }
+        
+        response = session.get(url, params=params, timeout=15, stream=True)
+        response.raise_for_status()
+        
+        # Get the full PDF content for local file write
+        pdf_content = response.content
+        
+        # Debug: Check content size and type
+        print(f"[DEBUG] Response size: {len(pdf_content)} bytes, content-type: {response.headers.get('content-type', 'unknown')}")
+        
+        # Check if response is actually a PDF (starts with %PDF)
+        if not pdf_content.startswith(b'%PDF'):
+            print(f"[DEBUG] Response doesn't look like a PDF. First 100 bytes: {pdf_content[:100]}")
+            # Might be HTML error or redirect, try re-authenticating
+            print("[DEBUG] Session may have expired, re-authenticating...")
+            _stored_cookies = None
+            _stored_session = None
+            _stored_cookies = await _authenticate_with_duo()
+            session = _stored_session
+            
+            # Retry the PDF fetch
+            response = session.get(url, params=params, timeout=15, stream=True)
+            response.raise_for_status()
+            pdf_content = response.content
+            
+            print(f"[DEBUG] After re-auth - Response size: {len(pdf_content)} bytes")
+            
+            if not pdf_content.startswith(b'%PDF'):
+                raise HTTPException(status_code=502, detail="Failed to retrieve a valid PDF")
+        
+        # Return the PDF content directly
+        return StreamingResponse(
+            iter([pdf_content]),
+            media_type="application/pdf",
+            headers={"Content-Disposition": f"inline; filename=syllabus_{term_code}_{crn}.pdf"}
+        )
+    except Exception as e:
+        print(f"Error fetching syllabus PDF: {str(e)}")
+        raise HTTPException(status_code=502, detail=f"Failed to fetch syllabus PDF: {str(e)}")
 
 
 async def _authenticate_with_duo():

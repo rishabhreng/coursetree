@@ -22,6 +22,7 @@ function App() {
   const [currentOffset, setCurrentOffset] = useState(0)
   const [lastQuery, setLastQuery] = useState('')
   const [lastTermCode, setLastTermCode] = useState('')
+  const [activeSyllabusKey, setActiveSyllabusKey] = useState(null)
 
   useEffect(() => {
     const fetchTerms = async () => {
@@ -183,7 +184,18 @@ function App() {
     }, 50)
 
     return () => clearTimeout(timerId)
-  }, [query, termCode])
+  }, [query, termCode, weightRecency])
+
+  // Cleanup blob URLs when component unmounts or syllabus lookup changes
+  useEffect(() => {
+    return () => {
+      Object.values(syllabusLookup).forEach((entry) => {
+        if (entry?.blobUrl && entry?.url) {
+          URL.revokeObjectURL(entry.url)
+        }
+      })
+    }
+  }, [])
 
   const toggleExpanded = (courseCode) => {
     const newExpanded = new Set(expandedCourses)
@@ -328,16 +340,35 @@ function App() {
 
       const data = await res.json()
       if (data.syllabus_url) {
+        // Fetch the PDF as a blob and create a data URL
+        const pdfRes = await fetch(data.syllabus_url)
+        if (!pdfRes.ok) {
+          throw new Error(`Failed to fetch PDF: ${pdfRes.status}`)
+        }
+        const pdfBlob = await pdfRes.blob()
+
+        // Debug logging
+        console.log(`[SYLLABUS] Fetched PDF - Size: ${pdfBlob.size} bytes, Type: ${pdfBlob.type}`)
+
+        // Check if we got a valid PDF
+        if (pdfBlob.type !== 'application/pdf' && !pdfBlob.type.includes('pdf')) {
+          console.warn(`[SYLLABUS] Warning: Unexpected blob type: ${pdfBlob.type}, size: ${pdfBlob.size} bytes`)
+        }
+
+        const pdfUrl = URL.createObjectURL(pdfBlob)
+        console.log(`[SYLLABUS] Created blob URL: ${pdfUrl}`)
+
         setSyllabusLookup((prev) => ({
           ...prev,
           [key]: {
             status: 'available',
             message: data.message || 'Syllabus available',
-            url: data.syllabus_url,
+            url: pdfUrl,
+            blobUrl: true, // Mark this as a blob URL for cleanup
           },
         }))
-        // Automatically open the syllabus in a new tab
-        window.open(data.syllabus_url, '_blank')
+        // Automatically open the PDF viewer
+        setActiveSyllabusKey(key)
       } else {
         setSyllabusLookup((prev) => ({
           ...prev,
@@ -576,7 +607,25 @@ function App() {
                           </div>
 
                           {syllabusState?.status === 'available' && syllabusState.url && (
-                            <p className="syllabus-status success">Syllabus opened in new tab</p>
+                            <>
+                              <button
+                                type="button"
+                                className="toggle-syllabus-btn"
+                                onClick={() => setActiveSyllabusKey(activeSyllabusKey === getSyllabusKey(course) ? null : getSyllabusKey(course))}
+                              >
+                                {activeSyllabusKey === getSyllabusKey(course) ? '▾ Hide Syllabus PDF' : '▸ View Syllabus PDF'}
+                              </button>
+                              {activeSyllabusKey === getSyllabusKey(course) && (
+                                <div className="syllabus-viewer">
+                                  <iframe
+                                    src={syllabusState.url}
+                                    type="application/pdf"
+                                    className="syllabus-iframe"
+                                    title="Syllabus PDF"
+                                  />
+                                </div>
+                              )}
+                            </>
                           )}
 
                           {syllabusState?.status === 'none' && (
