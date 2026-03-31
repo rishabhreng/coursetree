@@ -254,6 +254,34 @@ body {
   color: var(--text-primary);
 }
 
+.checkbox-group {
+  display: flex;
+  align-items: center;
+  padding: 0 12px;
+}
+
+.checkbox-label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  font-size: 0.9rem;
+  color: var(--text-secondary);
+  user-select: none;
+  transition: color 0.2s ease;
+}
+
+.checkbox-label:hover {
+  color: var(--text-primary);
+}
+
+.checkbox-label input[type="checkbox"] {
+  width: 18px;
+  height: 18px;
+  cursor: pointer;
+  accent-color: #a855f7;
+}
+
 .search-btn {
   padding: 12px 28px;
   background: linear-gradient(135deg, var(--primary) 0%, var(--primary-light) 100%);
@@ -574,6 +602,27 @@ body {
   cursor: not-allowed;
 }
 
+.collapse-eval-btn {
+  padding: 8px 12px;
+  margin-top: 8px;
+  border-radius: 4px;
+  border: 1px solid rgba(168, 85, 247, 0.4);
+  background: rgba(168, 85, 247, 0.08);
+  color: var(--text-secondary);
+  font-size: 0.85rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  width: 100%;
+  text-align: left;
+}
+
+.collapse-eval-btn:hover {
+  background: rgba(168, 85, 247, 0.15);
+  border-color: rgba(168, 85, 247, 0.6);
+  color: var(--text-primary);
+}
+
 .evaluation-results {
   margin-top: 12px;
   padding: 12px;
@@ -742,6 +791,60 @@ body {
   margin: 0;
 }
 
+/* Charts Section */
+.charts-section {
+  margin-bottom: 20px;
+  padding-bottom: 20px;
+  border-bottom: 2px solid rgba(168, 85, 247, 0.3);
+}
+
+.charts-title {
+  font-size: 1.1rem;
+  font-weight: 700;
+  color: var(--text-primary);
+  margin-bottom: 16px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.charts-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+}
+
+.chart-container {
+  padding: 12px;
+  background: rgba(26, 58, 122, 0.3);
+  border-radius: 6px;
+  border: 1px solid rgba(168, 85, 247, 0.2);
+}
+
+.chart-title {
+  font-size: 0.9rem;
+  font-weight: 600;
+  color: var(--text-primary);
+  margin-bottom: 8px;
+  line-height: 1.3;
+}
+
+.chart-meta {
+  font-size: 0.75rem;
+  color: var(--text-secondary);
+  margin-bottom: 8px;
+  font-weight: 500;
+}
+
+.chart-wrapper {
+  background: rgba(1, 10, 30, 0.4);
+  border-radius: 4px;
+  padding: 8px;
+}
+
+.comments-section {
+  margin-top: 16px;
+}
+
 /* Responsive Design */
 @media (max-width: 768px) {
   .header h1 {
@@ -790,5 +893,9 @@ body {
 
   .search-section {
     padding: 20px;
+  }
+
+  .charts-grid {
+    grid-template-columns: 1fr;
   }
 }

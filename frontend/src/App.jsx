@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, Cell } from 'recharts'
 import './App.css'
 
 const DEFAULT_TERM_CODE = '202710'
@@ -15,6 +16,8 @@ function App() {
   const [expandedCourses, setExpandedCourses] = useState(new Set())
   const [syllabusLookup, setSyllabusLookup] = useState({})
   const [evaluationLookup, setEvaluationLookup] = useState({})
+  const [collapsedEvals, setCollapsedEvals] = useState(new Set())
+  const [weightRecency, setWeightRecency] = useState(false)
   const [hasMore, setHasMore] = useState(false)
   const [currentOffset, setCurrentOffset] = useState(0)
   const [lastQuery, setLastQuery] = useState('')
@@ -89,6 +92,9 @@ function App() {
       if (termCode.trim()) {
         searchParams.set('term_code', termCode.trim())
       }
+      if (termCode === 'all' && weightRecency) {
+        searchParams.set('weight_recency', 'true')
+      }
 
       const res = await fetch(`/api/courses/?${searchParams.toString()}`)
       if (!res.ok) throw new Error(`Search failed ${res.status}`)
@@ -122,6 +128,9 @@ function App() {
       const searchParams = new URLSearchParams({ q: lastQuery, offset: currentOffset.toString(), top_n_results: '50' })
       if (lastTermCode) {
         searchParams.set('term_code', lastTermCode)
+      }
+      if (lastTermCode === 'all' && weightRecency) {
+        searchParams.set('weight_recency', 'true')
       }
 
       const res = await fetch(`/api/courses/?${searchParams.toString()}`)
@@ -184,6 +193,16 @@ function App() {
       newExpanded.add(courseCode)
     }
     setExpandedCourses(newExpanded)
+  }
+
+  const toggleEvalCollapsed = (evalKey) => {
+    const newCollapsed = new Set(collapsedEvals)
+    if (newCollapsed.has(evalKey)) {
+      newCollapsed.delete(evalKey)
+    } else {
+      newCollapsed.add(evalKey)
+    }
+    setCollapsedEvals(newCollapsed)
   }
 
   // Format meeting times: split by common delimiters and return array
@@ -264,6 +283,7 @@ function App() {
           [key]: {
             status: 'available',
             html: data.html,
+            charts: data.charts || [],
             message: 'Evaluation loaded',
           },
         }))
@@ -419,6 +439,20 @@ function App() {
                 )}
               </select>
             </div>
+
+            {termCode === 'all' && (
+              <div className="checkbox-group">
+                <label htmlFor="weight-recency" className="checkbox-label">
+                  <input
+                    id="weight-recency"
+                    type="checkbox"
+                    checked={weightRecency}
+                    onChange={(e) => setWeightRecency(e.target.checked)}
+                  />
+                  <span>Weight by Recency</span>
+                </label>
+              </div>
+            )}
           </div>
 
           {error && <p className="status error">❌ {error}</p>}
@@ -554,11 +588,87 @@ function App() {
                           )}
 
                           {evaluationLookup[getEvaluationKey(course)]?.status === 'available' && (
-                            <div className="evaluation-results">
-                              <div
-                                dangerouslySetInnerHTML={{ __html: evaluationLookup[getEvaluationKey(course)]?.html }}
-                              />
-                            </div>
+                            <>
+                              <button
+                                type="button"
+                                className="collapse-eval-btn"
+                                onClick={() => toggleEvalCollapsed(getEvaluationKey(course))}
+                              >
+                                {collapsedEvals.has(getEvaluationKey(course)) ? '▸ Show Evaluation' : '▾ Hide Evaluation'}
+                              </button>
+                              {!collapsedEvals.has(getEvaluationKey(course)) && (
+                                <div className="evaluation-results">
+                                  {evaluationLookup[getEvaluationKey(course)]?.charts && evaluationLookup[getEvaluationKey(course)].charts.length > 0 && (
+                                    <div className="charts-section">
+                                      <div className="charts-title">Survey Results</div>
+                                      <div className="charts-grid">
+                                        {evaluationLookup[getEvaluationKey(course)].charts.map((chart, idx) => {
+                                          // Prepare data for recharts - values are now actual counts
+                                          const chartData = chart.labels.map((label, i) => ({
+                                            name: label,
+                                            count: chart.values[i],
+                                          }))
+
+                                          // Use a color palette for bars
+                                          const colors = ['#667CC7', '#7B8FD7', '#90A3E7', '#A5B7F7', '#BAC5FF']
+
+                                          return (
+                                            <div key={idx} className="chart-container">
+                                              <div className="chart-title">{chart.title}</div>
+                                              <div className="chart-meta">
+                                                <span>Total Responses: {chart.total}</span>
+                                              </div>
+                                              <div className="chart-wrapper">
+                                                <ResponsiveContainer width="100%" height={200}>
+                                                  <BarChart data={chartData} margin={{ top: 10, right: 30, left: 0, bottom: 50 }}>
+                                                    <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.1)" />
+                                                    <XAxis
+                                                      dataKey="name"
+                                                      angle={-45}
+                                                      textAnchor="end"
+                                                      height={80}
+                                                      interval={0}
+                                                      tick={{ fill: '#E8E8E8', fontSize: 12, fontWeight: 500 }}
+                                                    />
+                                                    <YAxis tick={{ fill: '#E8E8E8' }} />
+                                                    <Tooltip
+                                                      contentStyle={{
+                                                        backgroundColor: 'rgba(0, 26, 71, 0.95)',
+                                                        border: '1px solid rgba(168, 85, 247, 0.3)',
+                                                        borderRadius: '4px',
+                                                        color: '#E8E8E8',
+                                                      }}
+                                                      labelStyle={{ color: '#E8E8E8' }}
+                                                      formatter={(value) => [value, 'Count']}
+                                                      wrapperStyle={{ color: '#E8E8E8' }}
+                                                    />
+                                                    <Bar dataKey="count" radius={[8, 8, 0, 0]}>
+                                                      {chartData.map((_, i) => (
+                                                        <Cell key={`cell-${i}`} fill={colors[i % colors.length]} />
+                                                      ))}
+                                                    </Bar>
+                                                  </BarChart>
+                                                </ResponsiveContainer>
+                                              </div>
+                                            </div>
+                                          )
+                                        })}
+                                      </div>
+                                    </div>
+                                  )}
+                                  <div className="comments-section">
+                                    <div
+                                      dangerouslySetInnerHTML={{
+                                        __html: evaluationLookup[getEvaluationKey(course)]?.html
+                                          .replace(/<div class="charts">[\s\S]*?<div class="comments">/g, '<div class="comments">')
+                                          .replace(/<div class="chart">[\s\S]*?<\/div>\s*<\/div>/g, '')
+                                          .replace(/<img[^>]*>/g, ''),
+                                      }}
+                                    />
+                                  </div>
+                                </div>
+                              )}
+                            </>
                           )}
 
                           {evaluationLookup[getEvaluationKey(course)]?.status === 'none' && (
