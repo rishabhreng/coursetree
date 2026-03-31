@@ -28,3 +28,6 @@ dist-ssr
 *.sw?
 
 __pycache__
+AGENTS.md
+.vercel
+.env*.local

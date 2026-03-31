@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, Cell } from 'recharts'
 import './App.css'
+import { API_URL } from './config'
 
 const DEFAULT_TERM_CODE = '202710'
 
@@ -27,7 +28,7 @@ function App() {
   useEffect(() => {
     const fetchTerms = async () => {
       try {
-        const res = await fetch('/api/terms')
+        const res = await fetch(`${API_URL}/api/terms`)
         if (!res.ok) throw new Error(`Failed to fetch terms: ${res.status}`)
         const data = await res.json()
         setTerms(Array.isArray(data) ? data : [])
@@ -38,7 +39,7 @@ function App() {
 
     const fetchSubjects = async () => {
       try {
-        const res = await fetch('/api/subjects')
+        const res = await fetch(`${API_URL}/api/subjects`)
         if (!res.ok) throw new Error(`Failed to fetch subjects: ${res.status}`)
         const data = await res.json()
         setSubjects(Array.isArray(data) ? data : [])
@@ -97,7 +98,7 @@ function App() {
         searchParams.set('weight_recency', 'true')
       }
 
-      const res = await fetch(`/api/courses/?${searchParams.toString()}`)
+      const res = await fetch(`${API_URL}/api/courses/?${searchParams.toString()}`)
       if (!res.ok) throw new Error(`Search failed ${res.status}`)
       const json = await res.json()
 
@@ -134,7 +135,7 @@ function App() {
         searchParams.set('weight_recency', 'true')
       }
 
-      const res = await fetch(`/api/courses/?${searchParams.toString()}`)
+      const res = await fetch(`${API_URL}/api/courses/?${searchParams.toString()}`)
       if (!res.ok) throw new Error(`Search failed ${res.status}`)
       const json = await res.json()
 
@@ -333,7 +334,7 @@ function App() {
 
     try {
       const params = new URLSearchParams({ term_code: course.term, crn: course.crn })
-      const res = await fetch(`/api/syllabus?${params.toString()}`)
+      const res = await fetch(`${API_URL}/api/evaluate?${params.toString()}`)
       if (!res.ok) {
         throw new Error(`Syllabus lookup failed ${res.status}`)
       }
@@ -341,7 +342,8 @@ function App() {
       const data = await res.json()
       if (data.syllabus_url) {
         // Fetch the PDF as a blob and create a data URL
-        const pdfRes = await fetch(data.syllabus_url)
+        const pdfUrl = data.syllabus_url.startsWith('http') ? data.syllabus_url : `${API_URL}${data.syllabus_url}`
+        const pdfRes = await fetch(pdfUrl)
         if (!pdfRes.ok) {
           throw new Error(`Failed to fetch PDF: ${pdfRes.status}`)
         }
@@ -355,15 +357,15 @@ function App() {
           console.warn(`[SYLLABUS] Warning: Unexpected blob type: ${pdfBlob.type}, size: ${pdfBlob.size} bytes`)
         }
 
-        const pdfUrl = URL.createObjectURL(pdfBlob)
-        console.log(`[SYLLABUS] Created blob URL: ${pdfUrl}`)
+        const pdfBlobUrl = URL.createObjectURL(pdfBlob)
+        console.log(`[SYLLABUS] Created blob URL: ${pdfBlobUrl}`)
 
         setSyllabusLookup((prev) => ({
           ...prev,
           [key]: {
             status: 'available',
             message: data.message || 'Syllabus available',
-            url: pdfUrl,
+            url: pdfBlobUrl,
             blobUrl: true, // Mark this as a blob URL for cleanup
           },
         }))

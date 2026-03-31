@@ -3,17 +3,11 @@ import re
 from collections import defaultdict
 from typing import Dict, List, Optional
 from xml.etree import ElementTree as ET
-import asyncio
-import json
-from urllib.parse import parse_qs, urlparse, unquote
 
 from fastapi import FastAPI, HTTPException, Depends
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
 import sqlite3 as sql
 import requests as rq
-from bs4 import BeautifulSoup
-from playwright.async_api import async_playwright
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 API_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -105,14 +99,11 @@ app = FastAPI()
 # UPDATE: Added potential production URL
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "https://your-app-name.vercel.app", "localhost"],
+    allow_origins=["*"],
+    allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-# Global storage for cookies from Duo authentication
-_stored_cookies = None
-_stored_session = None
 
 VALID_SUBJECTS = set()
 SUBJECT_NAMES = {}
@@ -267,6 +258,14 @@ def _group_courses(rows: List[sql.Row], db: sql.Connection) -> CoursesResponse:
     return dict(grouped)
 
 
+def _get_course_syllabus(term_code: str, crn: str) -> Optional[str]:
+    req = rq.get(f"{META_COURSES_URL}?action=SYLLABUS&term={term_code}&crn={crn}", timeout=15)
+    req.raise_for_status()
+    res = ET.fromstring(req.text)
+    if res.attrib.get('has-syllabus') != 'yes':
+        return None
+    return res.attrib.get('doc-url')
+
 
 
 @app.get("/api/courses/", response_model=CoursesResponse)
@@ -275,7 +274,6 @@ def search_courses(
     term_code: str = DEFAULT_COURSE_TERM_CODE, 
     top_n_results: int = 50,
     offset: int = 0,
-    weight_recency: bool = False,
     db: sql.Connection = Depends(get_db)
 ) -> CoursesResponse:
     try:
@@ -302,21 +300,13 @@ def search_courses(
                 "bm25(global_search) ASC LIMIT ? OFFSET ?"
             )
         else:
-            # When searching all terms with weight_recency, prioritize recency first
-            # Otherwise, prioritize search relevance (BM25) first
-            if term_code == "all" and weight_recency:
-                sql_query += (
-                    " ORDER BY CAST(REPLACE(term, 'courses_', '') AS INTEGER) DESC, "
-                    "bm25(global_search) ASC LIMIT ? OFFSET ?"
-                )
-            else:
-                sql_query += (
-                    " ORDER BY bm25(global_search) ASC, "
-                    "CAST(REPLACE(term, 'courses_', '') AS INTEGER) DESC LIMIT ? OFFSET ?"
-                )
+            sql_query += (
+                " ORDER BY bm25(global_search) ASC, "
+                "CAST(REPLACE(term, 'courses_', '') AS INTEGER) DESC LIMIT ? OFFSET ?"
+            )
         params.append(top_n_results)
         params.append(offset)
-        # print(f"Final SQL Query: '{sql_query}' with params {params}")
+        print(f"Final SQL Query: '{sql_query}' with params {params}")
         cur = db.cursor()
         rows = cur.execute(sql_query, tuple(params)).fetchall()
         return _group_courses(rows, db)
@@ -355,365 +345,19 @@ def get_subjects() -> List[Subject]:
 
 
 @app.get("/api/syllabus", response_model=SyllabusResponse)
-async def get_syllabus(term_code: str, crn: str) -> SyllabusResponse:
-    """
-    Check if syllabus exists for a course.
-    If it does, return URL to PDF endpoint for display.
-    """
+def get_syllabus(term_code: str, crn: str) -> SyllabusResponse:
+    """Get syllabus link for a course instance, if available."""
     if not re.match(r'^\d{6}$', term_code):
         raise HTTPException(status_code=400, detail="term_code must be a 6-digit code")
     if not re.match(r'^\d{5}$', crn):
         raise HTTPException(status_code=400, detail="crn must be a 5-digit value")
 
     try:
-        # Fast check first: see if syllabus exists without authentication
-        try:
-            metadata_url = f"{META_COURSES_URL}?action=SYLLABUS&term={term_code}&crn={crn}"
-            metadata_response = rq.get(metadata_url, timeout=15)
-            metadata_response.raise_for_status()
-            
-            metadata = ET.fromstring(metadata_response.text)
-            if metadata.attrib.get('has-syllabus') != 'yes':
-                return SyllabusResponse(syllabus_url=None, message="No syllabus posted")
-        except Exception as e:
-            print(f"Warning: Could not check syllabus metadata: {str(e)}")
-            return SyllabusResponse(syllabus_url=None, message="No syllabus posted")
-        
-        # Syllabus exists, return URL to PDF endpoint
-        pdf_url = f"/api/syllabus-pdf?term_code={term_code}&crn={crn}"
-        return SyllabusResponse(syllabus_url=pdf_url, message="Syllabus available")
+        syllabus_url = _get_course_syllabus(term_code, crn)
     except Exception as e:
-        raise HTTPException(status_code=502, detail=f"Failed to check syllabus: {str(e)}")
+        raise HTTPException(status_code=502, detail=f"Failed to fetch syllabus data: {str(e)}")
 
+    if syllabus_url:
+        return SyllabusResponse(syllabus_url=syllabus_url, message="Syllabus available")
 
-@app.get("/api/syllabus-pdf")
-async def get_syllabus_pdf(term_code: str, crn: str):
-    """
-    Fetch and stream the actual syllabus PDF.
-    Endpoint returns binary PDF directly (no headers, just raw PDF data).
-    Also saves a local copy for debugging and handles session re-authentication.
-    """
-    global _stored_cookies, _stored_session
-    
-    if not re.match(r'^\d{6}$', term_code):
-        raise HTTPException(status_code=400, detail="term_code must be a 6-digit code")
-    if not re.match(r'^\d{5}$', crn):
-        raise HTTPException(status_code=400, detail="crn must be a 5-digit value")
-
-    try:
-        # Authenticate if not already done (shared with evaluations)
-        if _stored_cookies is None or _stored_session is None:
-            _stored_cookies = await _authenticate_with_duo()
-        
-        # Use the stored session which has Duo authentication cookies
-        session = _stored_session
-        
-        # Fetch the PDF from authenticated endpoint
-        url = "https://esther.rice.edu/selfserve/!bwzkpsyl.v_viewDoc"
-        params = {
-            'term': term_code,
-            'type': 'SYLLABUS',
-            'crn': crn
-        }
-        
-        response = session.get(url, params=params, timeout=15, stream=True)
-        response.raise_for_status()
-        
-        # Get the full PDF content for local file write
-        pdf_content = response.content
-        
-        # Debug: Check content size and type
-        print(f"[DEBUG] Response size: {len(pdf_content)} bytes, content-type: {response.headers.get('content-type', 'unknown')}")
-        
-        # Check if response is actually a PDF (starts with %PDF)
-        if not pdf_content.startswith(b'%PDF'):
-            print(f"[DEBUG] Response doesn't look like a PDF. First 100 bytes: {pdf_content[:100]}")
-            # Might be HTML error or redirect, try re-authenticating
-            print("[DEBUG] Session may have expired, re-authenticating...")
-            _stored_cookies = None
-            _stored_session = None
-            _stored_cookies = await _authenticate_with_duo()
-            session = _stored_session
-            
-            # Retry the PDF fetch
-            response = session.get(url, params=params, timeout=15, stream=True)
-            response.raise_for_status()
-            pdf_content = response.content
-            
-            print(f"[DEBUG] After re-auth - Response size: {len(pdf_content)} bytes")
-            
-            if not pdf_content.startswith(b'%PDF'):
-                raise HTTPException(status_code=502, detail="Failed to retrieve a valid PDF")
-        
-        # Return the PDF content directly
-        return StreamingResponse(
-            iter([pdf_content]),
-            media_type="application/pdf",
-            headers={"Content-Disposition": f"inline; filename=syllabus_{term_code}_{crn}.pdf"}
-        )
-    except Exception as e:
-        print(f"Error fetching syllabus PDF: {str(e)}")
-        raise HTTPException(status_code=502, detail=f"Failed to fetch syllabus PDF: {str(e)}")
-
-
-async def _authenticate_with_duo():
-    """Authenticate once with Duo using Playwright and return cookies and session."""
-    global _stored_session
-    
-    async with async_playwright() as p:
-        print("Launching browser for Duo authentication...")
-        browser = await p.chromium.launch(headless=False)
-        context = await browser.new_context()
-        page = await context.new_page()
-
-        await page.goto("https://esther.rice.edu/")
-
-        # Wait for user to complete Duo authentication
-        await page.wait_for_selector("text='Personal Information'", timeout=0)
-        print("✅ Duo authentication successful!")
-
-        # Extract cookies
-        cookies = await context.cookies()
-        cookie_dict = {cookie['name']: cookie['value'] for cookie in cookies}
-
-        await browser.close()
-    
-    # Create session after auth and load cookies into it
-    _stored_session = rq.Session()
-    for name, value in cookie_dict.items():
-        _stored_session.cookies.set(name, value)
-    
-    return cookie_dict
-
-
-def _get_valid_term_codes(cookies_dict: dict) -> set:
-    """Fetch and parse valid term codes from Rice's API."""
-    try:
-        session = rq.Session()
-        for name, value in cookies_dict.items():
-            session.cookies.set(name, value)
-        
-        terms_url = "https://esther.rice.edu/selfserve/!swkscmp.ajax?p_data=TERMS"
-        response = session.get(terms_url, timeout=15)
-        
-        # Parse XML response
-        root = ET.fromstring(response.text)
-        term_codes = set()
-        
-        for term_elem in root.findall('.//TERM'):
-            code = term_elem.get('CODE')
-            if code:
-                term_codes.add(code)
-        
-        return term_codes
-    except Exception as e:
-        print(f"Error fetching term codes: {str(e)}")
-        return set()
-
-
-def _extract_chart_data(img_src: str, response_count: int = None) -> Optional[Dict]:
-    """Extract chart data from ObjectPlanet chart servlet URL and convert percentages to counts."""
-    try:
-        parsed_url = urlparse(img_src)
-        params = parse_qs(parsed_url.query)
-        
-        # Extract values and labels
-        values_str = params.get('sampleValues', [''])[0]
-        labels_str = params.get('sampleLabels', [''])[0]
-        title = unquote(params.get('chartTitle', [''])[0])
-        
-        if not values_str or not labels_str:
-            return None
-        
-        # These are percentages from the URL
-        percentage_values = [int(x) for x in values_str.split(',') if x.isdigit()]
-        
-        # Convert percentages to actual counts if response_count is provided
-        if response_count and response_count > 0:
-            actual_values = [round(pct * response_count / 100) for pct in percentage_values]
-        else:
-            actual_values = percentage_values
-        
-        # Labels are comma-separated with \n for line breaks
-        labels = []
-        for label in labels_str.split(','):
-            # Decode URL encoding and replace \n with space
-            decoded = unquote(label).replace('\n', ' ').strip()
-            if decoded:
-                labels.append(decoded)
-        
-        if not actual_values or not labels:
-            return None
-        
-        return {
-            "title": title,
-            "values": actual_values,
-            "labels": labels,
-            "total": response_count if response_count else sum(actual_values)
-        }
-    except Exception as e:
-        print(f"Error extracting chart data: {str(e)}")
-        return None
-
-
-@app.get("/api/evaluate")
-async def get_evaluation(term: str, crn: str, subject: str):
-    """
-    Get course evaluation data. First call triggers Duo auth.
-    Subsequent calls reuse stored session.
-    
-    Returns HTML of the results-container div.
-    """
-    global _stored_cookies, _stored_session
-
-    if not re.match(r'^\d{6}$', term):
-        raise HTTPException(status_code=400, detail="term must be a 6-digit code")
-    if not re.match(r'^\d{5}$', crn):
-        raise HTTPException(status_code=400, detail="crn must be a 5-digit value")
-    if not subject or not re.match(r'^[A-Z]{4}$', subject.upper()):
-        raise HTTPException(status_code=400, detail="subject must be 4-letter code")
-    
-    try:
-        # Authenticate if not already done
-        if _stored_cookies is None or _stored_session is None:
-            _stored_cookies = await _authenticate_with_duo()
-
-        # Check if term is valid
-        valid_terms = _get_valid_term_codes(_stored_cookies)
-        if term not in valid_terms:
-            return {
-                "success": False,
-                "message": "No evaluation data found",
-                "term": term,
-                "crn": crn,
-                "subject": subject.upper()
-            }
-
-        # Use the stored session (which maintains cookies)
-        session = _stored_session
-
-        url = "https://esther.rice.edu/selfserve/swkscmt.main"
-        headers = {
-            "Content-Type": "application/x-www-form-urlencoded",
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
-        }
-
-        # First, GET the page to extract the as_fid token
-        get_response = session.get(url, timeout=15)
-        soup = BeautifulSoup(get_response.text, 'html.parser')
-        
-        # Extract as_fid from form or page
-        as_fid = None
-        form = soup.find('form')
-        if form:
-            as_fid_input = form.find('input', {'name': 'as_fid'})
-            if as_fid_input:
-                as_fid = as_fid_input.get('value', '')
-        
-        if not as_fid:
-            # Try to extract from page source
-            import re as regex_module
-            match = regex_module.search(r'as_fid["\']?\s*[:=]\s*["\']?([a-f0-9]{40})', get_response.text)
-            if match:
-                as_fid = match.group(1)
-        
-        print(f"[DEBUG] as_fid: {as_fid}")
-
-        payload = {
-            "p_commentid": "",
-            "p_confirm": "1",
-            "p_term": term,
-            "p_type": "Course",
-            "p_crn": crn
-        }
-        
-        if as_fid:
-            payload["as_fid"] = as_fid
-
-        print(f"[DEBUG] Posting payload: {payload}")
-        response = session.post(url, headers=headers, data=payload, timeout=15)
-        print(f"[DEBUG] Response status: {response.status_code}")
-        print(f"[DEBUG] Response length: {len(response.text)}")
-        print(f"[DEBUG] Response preview: {response.text[:500]}")
-
-        # Check if session is valid
-        if "bmenu.P_MainMnu" not in response.text and "Personal Information" not in response.text:
-            print("[DEBUG] Session appears invalid, re-authenticating...")
-            # Session expired, clear and re-authenticate
-            _stored_cookies = None
-            _stored_session = None
-            _stored_cookies = await _authenticate_with_duo()
-            session = _stored_session
-            
-            # Get new as_fid
-            get_response = session.get(url, timeout=15)
-            soup = BeautifulSoup(get_response.text, 'html.parser')
-            form = soup.find('form')
-            if form:
-                as_fid_input = form.find('input', {'name': 'as_fid'})
-                if as_fid_input:
-                    payload["as_fid"] = as_fid_input.get('value', '')
-            
-            response = session.post(url, headers=headers, data=payload, timeout=15)
-
-        # Parse and extract results-container div
-        soup = BeautifulSoup(response.text, 'html.parser')
-        results_container = soup.find('div', class_='results-container')
-        
-        print(f"[DEBUG] Found results-container: {results_container is not None}")
-        if not results_container:
-            # Try alternative class names
-            print(f"[DEBUG] Searching for alternative containers...")
-            for div in soup.find_all('div'):
-                classes = div.get('class', [])
-                if 'result' in str(classes).lower() or 'eval' in str(classes).lower():
-                    print(f"[DEBUG] Found potential container with classes: {classes}")
-
-        if results_container:
-            # Extract chart data from image URLs with their response counts
-            charts_data = []
-            
-            # Find all chart divs
-            chart_divs = results_container.find_all('div', class_='chart')
-            
-            for chart_div in chart_divs:
-                # Extract response count from the filler div
-                filler = chart_div.find('div', class_='filler')
-                response_count = None
-                
-                if filler:
-                    # Find the div containing "Responses: XX"
-                    filler_text = filler.get_text()
-                    responses_match = re.search(r'Responses:\s*(\d+)', filler_text)
-                    if responses_match:
-                        response_count = int(responses_match.group(1))
-                
-                # Find the image with chart servlet URL
-                img = chart_div.find('img')
-                if img:
-                    src = img.get('src', '')
-                    if 'ChartServlet' in src:
-                        chart_data = _extract_chart_data(src, response_count)
-                        if chart_data:
-                            charts_data.append(chart_data)
-            
-            return {
-                "success": True,
-                "html": str(results_container),
-                "charts": charts_data,
-                "term": term,
-                "crn": crn,
-                "subject": subject.upper()
-            }
-        else:
-            return {
-                "success": False,
-                "message": "No evaluation data found",
-                "term": term,
-                "crn": crn,
-                "subject": subject.upper()
-            }
-
-    except Exception as e:
-        print(f"Error in evaluation endpoint: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Failed to fetch evaluation: {str(e)}")
+    return SyllabusResponse(syllabus_url=None, message="No syllabus posted")
