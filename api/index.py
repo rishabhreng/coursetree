@@ -9,7 +9,9 @@ from fastapi import FastAPI, HTTPException, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 import sqlite3 as sql
-import requests as rq
+from matplotlib.pylab import f
+import requests as r
+from requests import Session
 from bs4 import BeautifulSoup
 from playwright.async_api import async_playwright
 
@@ -234,50 +236,33 @@ def search_courses(
         raise HTTPException(status_code=500, detail=f"Unexpected server error: {str(e)}")
 
 @app.get("/api/terms", response_model=List[Term])
-def get_terms() -> List[Term]:
+def get_terms(db: sql.Connection = Depends(get_db)) -> List[Term]:
     """Get all available terms from the database."""
     try:
-        con = sql.connect(f"file:{DB_PATH}?mode=ro", uri=True, check_same_thread=False)
-        # con.row_factory = sql.Row
-        cur = con.cursor()
+        cur = db.cursor()
         rows = cur.execute("SELECT code, term FROM terms ORDER BY code DESC").fetchall()
-        con.close()
         return [Term(code=row['code'], term=row['term']) for row in rows]
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to fetch terms: {str(e)}")
 
 
 @app.get("/api/subjects", response_model=List[Subject])
-def get_subjects() -> List[Subject]:
+def get_subjects(db: sql.Connection = Depends(get_db)) -> List[Subject]:
     """Get all available subject codes with their full subject names."""
     try:
-        with sql.connect(f"file:{DB_PATH}?mode=ro", uri=True) as con:
-            cur = con.cursor()
+        cur = db.cursor()
 
-            # Find all tables that look like 'subjects_XXXXXX'
-            cur.execute("SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'subjects_%'")
-            subject_tables = [row[0] for row in cur.fetchall()]
+        # Find all tables that look like 'subjects_XXXXXX'
+        cur.execute("SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'subjects_%'")
+        subject_tables = [row[0] for row in cur.fetchall()]
 
-            for table in subject_tables:
-                # Get all columns to understand what data is available
-                cur.execute(f"PRAGMA table_info({table})")
-                columns = [col[1] for col in cur.fetchall()]
-                
-                # Fetch both code and subject name
-                if 'subject' in columns and 'code' in columns:
-                    rows = cur.execute(f"SELECT DISTINCT code, subject FROM {table}").fetchall()
-                    for code, subject in rows:
-                        code_upper = code.upper()
-                        VALID_SUBJECTS.add(code_upper)
-                        SUBJECT_NAMES[code_upper] = subject
-                else:
-                    # Fallback if only code is available
-                    rows = cur.execute(f"SELECT DISTINCT code FROM {table}").fetchall()
-                    for r in rows:
-                        code_upper = r[0].upper()
-                        VALID_SUBJECTS.add(code_upper)
-                        if code_upper not in SUBJECT_NAMES:
-                            SUBJECT_NAMES[code_upper] = code_upper
+        for table in subject_tables:
+            rows = cur.execute(f"SELECT DISTINCT code, subject FROM {table}").fetchall()
+            for code, subject in rows:
+                code_upper = code.upper()
+                VALID_SUBJECTS.add(code_upper)
+                SUBJECT_NAMES[code_upper] = subject
+        
         subjects = [
             Subject(code=code, subject=SUBJECT_NAMES.get(code, code))
                 for code in sorted(VALID_SUBJECTS)
@@ -292,23 +277,18 @@ async def get_syllabus(term_code: str, crn: str) -> SyllabusResponse:
     Check if syllabus exists for a course.
     If it does, return URL to PDF endpoint for display.
     """
-    if not re.match(r'^\d{6}$', term_code):
-        raise HTTPException(status_code=400, detail="term_code must be a 6-digit code")
-    if not re.match(r'^\d{5}$', crn):
-        raise HTTPException(status_code=400, detail="crn must be a 5-digit value")
-
     try:
-        # Fast check first: see if syllabus exists without authentication
+        # Check if syllabus exists via faster metadata api first:  
         try:
             metadata_url = f"{META_COURSES_URL}?action=SYLLABUS&term={term_code}&crn={crn}"
-            metadata_response = rq.get(metadata_url, timeout=15)
+            metadata_response = r.get(metadata_url, timeout=15)
             metadata_response.raise_for_status()
             
             metadata = ET.fromstring(metadata_response.text)
             if metadata.attrib.get('has-syllabus') != 'yes':
                 return SyllabusResponse(syllabus_url=None, message="No syllabus posted")
         except Exception as e:
-            print(f"Warning: Could not check syllabus metadata: {str(e)}")
+            print(f"[ERROR] Could not check syllabus metadata: {str(e)}")
             return SyllabusResponse(syllabus_url=None, message="No syllabus posted")
         
         # Syllabus exists, return URL to PDF endpoint
@@ -327,17 +307,14 @@ async def get_syllabus_pdf(term_code: str, crn: str):
     """
     global _stored_cookies, _stored_session
     
-    if not re.match(r'^\d{6}$', term_code):
-        raise HTTPException(status_code=400, detail="term_code must be a 6-digit code")
-    if not re.match(r'^\d{5}$', crn):
-        raise HTTPException(status_code=400, detail="crn must be a 5-digit value")
-
     try:
         # Authenticate if not already done (shared with evaluations)
         if _stored_cookies is None or _stored_session is None:
             _stored_cookies = await _authenticate_with_duo()
         
         # Use the stored session which has Duo authentication cookies
+        print(f'Cookies: {_stored_cookies}')
+        print(f'Session cookies: {_stored_session.cookies.get_dict()}')
         session = _stored_session
         
         # Fetch the PDF from authenticated endpoint
@@ -348,7 +325,7 @@ async def get_syllabus_pdf(term_code: str, crn: str):
             'crn': crn
         }
         
-        response = session.get(url, params=params, timeout=15, stream=True)
+        response = session.get(url, params=params, cookies=_stored_cookies, timeout=15, stream=True)
         response.raise_for_status()
         
         # Get the full PDF content for local file write
@@ -384,7 +361,7 @@ async def get_syllabus_pdf(term_code: str, crn: str):
             headers={"Content-Disposition": f"inline; filename=syllabus_{term_code}_{crn}.pdf"}
         )
     except Exception as e:
-        print(f"Error fetching syllabus PDF: {str(e)}")
+        print(f"[ERROR] Error fetching syllabus PDF: {str(e)}")
         raise HTTPException(status_code=502, detail=f"Failed to fetch syllabus PDF: {str(e)}")
 
 
@@ -411,7 +388,7 @@ async def _authenticate_with_duo():
         await browser.close()
     
     # Create session after auth and load cookies into it
-    _stored_session = rq.Session()
+    _stored_session = Session()
     for name, value in cookie_dict.items():
         _stored_session.cookies.set(name, value)
     
@@ -421,7 +398,7 @@ async def _authenticate_with_duo():
 def _get_valid_term_codes(cookies_dict: dict) -> set:
     """Fetch and parse valid term codes from Rice's API."""
     try:
-        session = rq.Session()
+        session = Session()
         for name, value in cookies_dict.items():
             session.cookies.set(name, value)
         
@@ -439,7 +416,7 @@ def _get_valid_term_codes(cookies_dict: dict) -> set:
         
         return term_codes
     except Exception as e:
-        print(f"Error fetching term codes: {str(e)}")
+        print(f"[ERROR] Error fetching term codes: {str(e)}")
         return set()
 
 
@@ -484,7 +461,7 @@ def _extract_chart_data(img_src: str, response_count: int = None) -> Optional[Di
             "total": response_count if response_count else sum(actual_values)
         }
     except Exception as e:
-        print(f"Error extracting chart data: {str(e)}")
+        print(f"[ERROR] Error extracting chart data: {str(e)}")
         return None
 
 
@@ -498,13 +475,6 @@ async def get_evaluation(term: str, crn: str, subject: str):
     """
     global _stored_cookies, _stored_session
 
-    if not re.match(r'^\d{6}$', term):
-        raise HTTPException(status_code=400, detail="term must be a 6-digit code")
-    if not re.match(r'^\d{5}$', crn):
-        raise HTTPException(status_code=400, detail="crn must be a 5-digit value")
-    if not subject or not re.match(r'^[A-Z]{4}$', subject.upper()):
-        raise HTTPException(status_code=400, detail="subject must be 4-letter code")
-    
     try:
         # Authenticate if not already done
         if _stored_cookies is None or _stored_session is None:
