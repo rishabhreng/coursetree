@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, Cell } from 'recharts'
 import './App.css'
 
@@ -23,6 +23,7 @@ function App() {
   const [lastQuery, setLastQuery] = useState('')
   const [lastTermCode, setLastTermCode] = useState('')
   const [activeSyllabusKey, setActiveSyllabusKey] = useState(null)
+  const syllabusLookupRef = useRef({})
 
   useEffect(() => {
     const fetchTerms = async () => {
@@ -186,10 +187,14 @@ function App() {
     return () => clearTimeout(timerId)
   }, [query, termCode, weightRecency])
 
-  // Cleanup blob URLs when component unmounts or syllabus lookup changes
+  useEffect(() => {
+    syllabusLookupRef.current = syllabusLookup
+  }, [syllabusLookup])
+
+  // Cleanup blob URLs when component unmounts
   useEffect(() => {
     return () => {
-      Object.values(syllabusLookup).forEach((entry) => {
+      Object.values(syllabusLookupRef.current).forEach((entry) => {
         if (entry?.blobUrl && entry?.url) {
           URL.revokeObjectURL(entry.url)
         }
@@ -338,36 +343,63 @@ function App() {
         throw new Error(`Syllabus lookup failed ${res.status}`)
       }
 
+      const contentType = (res.headers.get('content-type') || '').toLowerCase()
+
+      // New merged backend behavior: /api/syllabus can directly return a PDF stream.
+      if (contentType.includes('application/pdf')) {
+        const pdfBlob = await res.blob()
+        const pdfUrl = URL.createObjectURL(pdfBlob)
+
+        setSyllabusLookup((prev) => {
+          const prior = prev[key]
+          if (prior?.blobUrl && prior?.url) {
+            URL.revokeObjectURL(prior.url)
+          }
+
+          return {
+            ...prev,
+            [key]: {
+              status: 'available',
+              message: 'Syllabus available',
+              url: pdfUrl,
+              blobUrl: true,
+            },
+          }
+        })
+
+        // Automatically open the PDF viewer
+        setActiveSyllabusKey(key)
+        return
+      }
+
+      // Backward compatibility: some API responses still return JSON metadata.
       const data = await res.json()
       if (data.syllabus_url) {
-        // Fetch the PDF as a blob and create a data URL
         const pdfRes = await fetch(data.syllabus_url)
         if (!pdfRes.ok) {
           throw new Error(`Failed to fetch PDF: ${pdfRes.status}`)
         }
+
         const pdfBlob = await pdfRes.blob()
-
-        // Debug logging
-        console.log(`[SYLLABUS] Fetched PDF - Size: ${pdfBlob.size} bytes, Type: ${pdfBlob.type}`)
-
-        // Check if we got a valid PDF
-        if (pdfBlob.type !== 'application/pdf' && !pdfBlob.type.includes('pdf')) {
-          console.warn(`[SYLLABUS] Warning: Unexpected blob type: ${pdfBlob.type}, size: ${pdfBlob.size} bytes`)
-        }
-
         const pdfUrl = URL.createObjectURL(pdfBlob)
-        console.log(`[SYLLABUS] Created blob URL: ${pdfUrl}`)
 
-        setSyllabusLookup((prev) => ({
-          ...prev,
-          [key]: {
-            status: 'available',
-            message: data.message || 'Syllabus available',
-            url: pdfUrl,
-            blobUrl: true, // Mark this as a blob URL for cleanup
-          },
-        }))
-        // Automatically open the PDF viewer
+        setSyllabusLookup((prev) => {
+          const prior = prev[key]
+          if (prior?.blobUrl && prior?.url) {
+            URL.revokeObjectURL(prior.url)
+          }
+
+          return {
+            ...prev,
+            [key]: {
+              status: 'available',
+              message: data.message || 'Syllabus available',
+              url: pdfUrl,
+              blobUrl: true,
+            },
+          }
+        })
+
         setActiveSyllabusKey(key)
       } else {
         setSyllabusLookup((prev) => ({

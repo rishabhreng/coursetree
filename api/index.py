@@ -108,6 +108,74 @@ VALID_SUBJECTS = set()
 SUBJECT_NAMES = {}
 
 
+def _clear_stored_auth() -> None:
+    global _stored_cookies, _stored_session
+    _stored_cookies = None
+    _stored_session = None
+
+
+def _sync_stored_cookies_from_session() -> None:
+    global _stored_cookies, _stored_session
+    if _stored_session is not None:
+        _stored_cookies = _stored_session.cookies.get_dict()
+
+
+def _is_pdf_response(content: bytes) -> bool:
+    return content.startswith(b'%PDF')
+
+
+def _looks_like_auth_expired(content: bytes) -> bool:
+    sample = content[:2000].lower()
+    return (
+        b'cas' in sample
+        or b'netid' in sample
+        or b'duo' in sample
+        or b'sign in' in sample
+        or b'personal information' in sample
+    )
+
+
+def _looks_like_direct_link_block(content: bytes) -> bool:
+    sample = content[:4000].lower()
+    return (
+        b'direct link' in sample
+        or b'direct-link' in sample
+        or b'access denied' in sample
+        or b'not authorized' in sample
+    )
+
+
+def _fetch_syllabus_pdf_with_session(session: Session, term_code: str, crn: str):
+    url = "https://esther.rice.edu/selfserve/!bwzkpsyl.v_viewDoc"
+    params = {
+        'term': term_code,
+        'type': 'SYLLABUS',
+        'crn': crn,
+    }
+    headers = {
+        'Referer': 'https://esther.rice.edu/selfserve/swkscmt.main',
+        'Accept': 'application/pdf,application/octet-stream;q=0.9,*/*;q=0.8',
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+    }
+    return session.get(url, params=params, headers=headers, timeout=15, stream=True)
+
+
+def _bootstrap_selfserve_context(session: Session) -> None:
+    """Warm key self-serve pages that commonly establish routing/session context."""
+    session.get("https://esther.rice.edu/selfserve/", timeout=15)
+    session.get("https://esther.rice.edu/selfserve/swkscmt.main", timeout=15)
+
+
+async def _ensure_authenticated_session() -> Session:
+    """Return an authenticated shared session, creating one via Duo when needed."""
+    global _stored_cookies, _stored_session
+
+    if _stored_cookies is None or _stored_session is None:
+        _stored_cookies = await _authenticate_with_duo()
+
+    return _stored_session
+
+
 # --- DATABASE DEPENDENCY ---
 def get_db():
     # In Vercel, we open in read-only mode to be safe/efficient
@@ -275,8 +343,10 @@ def get_subjects(db: sql.Connection = Depends(get_db)) -> List[Subject]:
 async def get_syllabus(term_code: str, crn: str) -> SyllabusResponse:
     """
     Check if syllabus exists for a course.
-    If it does, return URL to PDF endpoint for display.
+    If it does, query PDF endpoint to fetch it via authenticated session.
     """
+    global _stored_cookies, _stored_session
+
     try:
         # Check if syllabus exists via faster metadata api first:  
         try:
@@ -291,79 +361,65 @@ async def get_syllabus(term_code: str, crn: str) -> SyllabusResponse:
             print(f"[ERROR] Could not check syllabus metadata: {str(e)}")
             return SyllabusResponse(syllabus_url=None, message="No syllabus posted")
         
-        # Syllabus exists, return URL to PDF endpoint
-        pdf_url = f"/api/syllabus-pdf?term_code={term_code}&crn={crn}"
-        return SyllabusResponse(syllabus_url=pdf_url, message="Syllabus available")
-    except Exception as e:
-        raise HTTPException(status_code=502, detail=f"Failed to check syllabus: {str(e)}")
-
-
-@app.get("/api/syllabus-pdf")
-async def get_syllabus_pdf(term_code: str, crn: str):
-    """
-    Fetch and stream the actual syllabus PDF.
-    Endpoint returns binary PDF directly (no headers, just raw PDF data).
-    Also saves a local copy for debugging and handles session re-authentication.
-    """
-    global _stored_cookies, _stored_session
-    
-    try:
-        # Authenticate if not already done (shared with evaluations)
-        if _stored_cookies is None or _stored_session is None:
-            _stored_cookies = await _authenticate_with_duo()
-        
-        # Use the stored session which has Duo authentication cookies
-        print(f'Cookies: {_stored_cookies}')
-        print(f'Session cookies: {_stored_session.cookies.get_dict()}')
-        session = _stored_session
-        
-        # Fetch the PDF from authenticated endpoint
-        url = "https://esther.rice.edu/selfserve/!bwzkpsyl.v_viewDoc"
-        params = {
-            'term': term_code,
-            'type': 'SYLLABUS',
-            'crn': crn
-        }
-        
-        response = session.get(url, params=params, cookies=_stored_cookies, timeout=15, stream=True)
-        response.raise_for_status()
-        
-        # Get the full PDF content for local file write
-        pdf_content = response.content
-        
-        # Debug: Check content size and type
-        print(f"[DEBUG] Response size: {len(pdf_content)} bytes, content-type: {response.headers.get('content-type', 'unknown')}")
-        
-        # Check if response is actually a PDF (starts with %PDF)
-        if not pdf_content.startswith(b'%PDF'):
-            print(f"[DEBUG] Response doesn't look like a PDF. First 100 bytes: {pdf_content[:100]}")
-            # Might be HTML error or redirect, try re-authenticating
-            print("[DEBUG] Session may have expired, re-authenticating...")
-            _stored_cookies = None
-            _stored_session = None
-            _stored_cookies = await _authenticate_with_duo()
-            session = _stored_session
+        try:
+            # Authenticate if not already done (shared with evaluations)
+            session = await _ensure_authenticated_session()
             
-            # Retry the PDF fetch
-            response = session.get(url, params=params, timeout=15, stream=True)
+            # Use the stored session which has Duo authentication cookies
+            print(f'Cookies: {_stored_cookies}')
+            print(f'Session cookies: {_stored_session.cookies.get_dict()}')
+            
+            # Fetch the PDF from authenticated endpoint
+            response = _fetch_syllabus_pdf_with_session(session, term_code, crn)
             response.raise_for_status()
+            _sync_stored_cookies_from_session()
+            
+            # Get the full PDF content for local file write
             pdf_content = response.content
             
-            print(f"[DEBUG] After re-auth - Response size: {len(pdf_content)} bytes")
+            # Debug: Check content size and type
+            print(f"[DEBUG] Response size: {len(pdf_content)} bytes, content-type: {response.headers.get('content-type', 'unknown')}")
             
-            if not pdf_content.startswith(b'%PDF'):
-                raise HTTPException(status_code=502, detail="Failed to retrieve a valid PDF")
-        
-        # Return the PDF content directly
-        return StreamingResponse(
-            iter([pdf_content]),
-            media_type="application/pdf",
-            headers={"Content-Disposition": f"inline; filename=syllabus_{term_code}_{crn}.pdf"}
-        )
-    except Exception as e:
-        print(f"[ERROR] Error fetching syllabus PDF: {str(e)}")
-        raise HTTPException(status_code=502, detail=f"Failed to fetch syllabus PDF: {str(e)}")
+            # Check if response is actually a PDF.
+            if not _is_pdf_response(pdf_content):
+                print(f"[DEBUG] Response doesn't look like a PDF. First 100 bytes: {pdf_content[:100]}")
+                # Some responses are direct-link/context failures, not true auth expiry.
+                if _looks_like_direct_link_block(pdf_content):
+                    print("[DEBUG] Syllabus direct-link block detected. Bootstrapping selfserve context...")
+                    _bootstrap_selfserve_context(session)
+                    response = _fetch_syllabus_pdf_with_session(session, term_code, crn)
+                    response.raise_for_status()
+                    pdf_content = response.content
+                    _sync_stored_cookies_from_session()
+                    print(f"[DEBUG] After context bootstrap - Response size: {len(pdf_content)} bytes")
 
+                # Only re-authenticate when response appears to be login/auth-related.
+                if not _is_pdf_response(pdf_content) and _looks_like_auth_expired(pdf_content):
+                    print("[DEBUG] Auth expiry detected during syllabus fetch. Re-authenticating...")
+                    _clear_stored_auth()
+                    session = await _ensure_authenticated_session()
+                    _bootstrap_selfserve_context(session)
+                    response = _fetch_syllabus_pdf_with_session(session, term_code, crn)
+                    response.raise_for_status()
+                    pdf_content = response.content
+                    _sync_stored_cookies_from_session()
+                    print(f"[DEBUG] After re-auth - Response size: {len(pdf_content)} bytes")
+
+                if not _is_pdf_response(pdf_content):
+                    raise HTTPException(status_code=502, detail="Failed to retrieve a valid syllabus PDF")
+            
+            # Return the PDF content directly
+            return StreamingResponse(
+                iter([pdf_content]),
+                media_type="application/pdf",
+                headers={"Content-Disposition": f"inline; filename=syllabus_{term_code}_{crn}.pdf"}
+            )
+        except Exception as e:
+            print(f"[ERROR] Error fetching syllabus PDF: {str(e)}")
+            raise HTTPException(status_code=502, detail=f"Failed to fetch syllabus PDF: {str(e)}")
+
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Failed to check syllabus: {str(e)}")
 
 async def _authenticate_with_duo():
     """Authenticate once with Duo using Playwright and return cookies and session."""
@@ -391,17 +447,21 @@ async def _authenticate_with_duo():
     _stored_session = Session()
     for name, value in cookie_dict.items():
         _stored_session.cookies.set(name, value)
-    
-    return cookie_dict
 
-
-def _get_valid_term_codes(cookies_dict: dict) -> set:
-    """Fetch and parse valid term codes from Rice's API."""
+    # Prime selfserve cookies so both syllabus and evaluation can reuse the same session.
     try:
-        session = Session()
-        for name, value in cookies_dict.items():
-            session.cookies.set(name, value)
-        
+        _bootstrap_selfserve_context(_stored_session)
+    except Exception as e:
+        print(f"[WARN] Failed to warm selfserve session after Duo auth: {str(e)}")
+
+    _sync_stored_cookies_from_session()
+    
+    return _stored_cookies
+
+
+def _get_valid_term_codes(session: Session) -> set:
+    """Fetch and parse valid term codes from Rice's API using active auth session."""
+    try:
         terms_url = "https://esther.rice.edu/selfserve/!swkscmp.ajax?p_data=TERMS"
         response = session.get(terms_url, timeout=15)
         
@@ -477,11 +537,10 @@ async def get_evaluation(term: str, crn: str, subject: str):
 
     try:
         # Authenticate if not already done
-        if _stored_cookies is None or _stored_session is None:
-            _stored_cookies = await _authenticate_with_duo()
+        session = await _ensure_authenticated_session()
 
         # Check if term is valid
-        valid_terms = _get_valid_term_codes(_stored_cookies)
+        valid_terms = _get_valid_term_codes(session)
         if term not in valid_terms:
             return {
                 "success": False,
@@ -492,7 +551,7 @@ async def get_evaluation(term: str, crn: str, subject: str):
             }
 
         # Use the stored session (which maintains cookies)
-        session = _stored_session
+        _sync_stored_cookies_from_session()
 
         url = "https://esther.rice.edu/selfserve/swkscmt.main"
         headers = {
@@ -542,10 +601,8 @@ async def get_evaluation(term: str, crn: str, subject: str):
         if "bmenu.P_MainMnu" not in response.text and "Personal Information" not in response.text:
             print("[DEBUG] Session appears invalid, re-authenticating...")
             # Session expired, clear and re-authenticate
-            _stored_cookies = None
-            _stored_session = None
-            _stored_cookies = await _authenticate_with_duo()
-            session = _stored_session
+            _clear_stored_auth()
+            session = await _ensure_authenticated_session()
             
             # Get new as_fid
             get_response = session.get(url, timeout=15)
@@ -557,6 +614,7 @@ async def get_evaluation(term: str, crn: str, subject: str):
                     payload["as_fid"] = as_fid_input.get('value', '')
             
             response = session.post(url, headers=headers, data=payload, timeout=15)
+            _sync_stored_cookies_from_session()
 
         # Parse and extract results-container div
         soup = BeautifulSoup(response.text, 'html.parser')
