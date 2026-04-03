@@ -3,6 +3,7 @@ import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, Responsive
 import './App.css'
 
 const DEFAULT_TERM_CODE = '202710'
+const API_BASE_URL = import.meta.env.VITE_API_URL || (typeof process !== 'undefined' ? process.env.REACT_APP_API_URL : undefined) || 'https://api-ricecourses.duckdns.org'
 
 function App() {
   const [query, setQuery] = useState('')
@@ -24,11 +25,45 @@ function App() {
   const [lastTermCode, setLastTermCode] = useState('')
   const [activeSyllabusKey, setActiveSyllabusKey] = useState(null)
   const syllabusLookupRef = useRef({})
+  
+  // Auth State
+  const [showAuthModal, setShowAuthModal] = useState(false);
+  const [netid, setNetid] = useState('');
+  const [password, setPassword] = useState('');
+  const [authLoading, setAuthLoading] = useState(false);
+  const [authError, setAuthError] = useState(null);
+  const [pendingAction, setPendingAction] = useState(null);
+
+  const handleAuthSubmit = async (e) => {
+    e.preventDefault();
+    setAuthLoading(true);
+    setAuthError(null);
+
+    try {
+      const res = await fetch(`${API_BASE_URL}/api/auth`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ netid, password })
+      });
+
+      if (!res.ok) throw new Error("Login failed or Duo push was denied.");
+
+      // Success! Hide modal and execute whatever they originally clicked
+      setShowAuthModal(false);
+      if (pendingAction?.type === 'syllabus') fetchSyllabus(pendingAction.course);
+      if (pendingAction?.type === 'eval') fetchEvaluation(pendingAction.course);
+      
+    } catch (err) {
+      setAuthError(err.message);
+    } finally {
+      setAuthLoading(false);
+    }
+  };
 
   useEffect(() => {
     const fetchTerms = async () => {
       try {
-        const res = await fetch('/api/terms')
+        const res = await fetch(`${API_BASE_URL}/api/terms`)
         if (!res.ok) throw new Error(`Failed to fetch terms: ${res.status}`)
         const data = await res.json()
         setTerms(Array.isArray(data) ? data : [])
@@ -39,7 +74,7 @@ function App() {
 
     const fetchSubjects = async () => {
       try {
-        const res = await fetch('/api/subjects')
+        const res = await fetch(`${API_BASE_URL}/api/subjects`)
         if (!res.ok) throw new Error(`Failed to fetch subjects: ${res.status}`)
         const data = await res.json()
         setSubjects(Array.isArray(data) ? data : [])
@@ -52,7 +87,6 @@ function App() {
     fetchSubjects()
   }, [])
 
-  // Convert term code to readable format (e.g., 202710 -> Fall 2026)
   const getTermLabel = (code) => {
     const foundTerm = terms.find((term) => term.code === code)
     if (foundTerm) return foundTerm.term
@@ -62,7 +96,6 @@ function App() {
 
   const normalizeResults = (payload) => {
     if (Array.isArray(payload)) {
-      // Backward/forward compatible: some API versions return a list of rows.
       return payload.reduce((acc, course) => {
         const key = course.crs || `${course.term}-${course.crn}`
         if (!acc[key]) acc[key] = []
@@ -98,7 +131,7 @@ function App() {
         searchParams.set('weight_recency', 'true')
       }
 
-      const res = await fetch(`/api/courses/?${searchParams.toString()}`)
+      const res = await fetch(`${API_BASE_URL}/api/courses/?${searchParams.toString()}`)
       if (!res.ok) throw new Error(`Search failed ${res.status}`)
       const json = await res.json()
 
@@ -107,7 +140,6 @@ function App() {
       setExpandedCourses(new Set())
       setSyllabusLookup({})
 
-      // Check if we got exactly 50 results (meaning there might be more)
       const totalCourses = Object.values(normalized).flat().length
       setHasMore(totalCourses === 50)
       setCurrentOffset(50)
@@ -135,13 +167,12 @@ function App() {
         searchParams.set('weight_recency', 'true')
       }
 
-      const res = await fetch(`/api/courses/?${searchParams.toString()}`)
+      const res = await fetch(`${API_BASE_URL}/api/courses/?${searchParams.toString()}`)
       if (!res.ok) throw new Error(`Search failed ${res.status}`)
       const json = await res.json()
 
       const newResults = normalizeResults(json)
 
-      // Merge results instead of replacing them
       const mergedResults = { ...results }
       for (const [courseCode, courseInstances] of Object.entries(newResults)) {
         if (mergedResults[courseCode]) {
@@ -153,7 +184,6 @@ function App() {
 
       setResults(mergedResults)
 
-      // Check if we got exactly 50 results (meaning there might be more)
       const totalNewCourses = Object.values(newResults).flat().length
       setHasMore(totalNewCourses === 50)
       setCurrentOffset(currentOffset + 50)
@@ -191,7 +221,6 @@ function App() {
     syllabusLookupRef.current = syllabusLookup
   }, [syllabusLookup])
 
-  // Cleanup blob URLs when component unmounts
   useEffect(() => {
     return () => {
       Object.values(syllabusLookupRef.current).forEach((entry) => {
@@ -222,13 +251,9 @@ function App() {
     setCollapsedEvals(newCollapsed)
   }
 
-  // Format meeting times: split by common delimiters and return array
   const formatMeetingTimes = (timesStr) => {
     if (!timesStr || timesStr === 'TBA' || timesStr === '[]') return ['TBA']
-
     const trimmed = timesStr.trim()
-
-    // Parse JSON-like arrays, e.g. ["MWF 10:00 AM - 11:00 AM", "TR 2:00 PM - 3:00 PM"]
     if (trimmed.startsWith('[') && trimmed.endsWith(']')) {
       try {
         const parsed = JSON.parse(trimmed)
@@ -236,25 +261,15 @@ function App() {
           const times = parsed.map((time) => String(time).trim()).filter(Boolean)
           return times.length > 0 ? times : ['TBA']
         }
-      } catch {
-        // Fall through to delimiter-based parsing below.
-      }
+      } catch {}
     }
-
-    // If it looks like comma or semicolon separated values, split and rejoin
-    const timesList = timesStr
-      .split(/,|;\s*/)
-      .map(s => s.trim())
-      .filter(s => s.length > 0)
-
+    const timesList = timesStr.split(/,|;\s*/).map(s => s.trim()).filter(s => s.length > 0)
     return timesList.length > 0 ? timesList : ['TBA']
   }
+
   const formatInstructors = (instructorStr) => {
     if (!instructorStr || instructorStr === 'TBA' || instructorStr === '[]') return ['TBA']
-
     const trimmed = instructorStr.trim()
-
-    // Parse JSON-like arrays from the scraper, e.g. ["A", "B"]
     if (trimmed.startsWith('[') && trimmed.endsWith(']')) {
       try {
         const parsed = JSON.parse(trimmed)
@@ -262,16 +277,9 @@ function App() {
           const names = parsed.map((name) => String(name).trim()).filter(Boolean)
           return names.length > 0 ? names : ['TBA']
         }
-      } catch {
-        // Fall through to delimiter-based parsing below.
-      }
+      } catch {}
     }
-
-    const instructors = instructorStr
-      .split(/,|;\s*/)
-      .map(s => s.trim())
-      .filter(s => s.length > 0)
-
+    const instructors = instructorStr.split(/,|;\s*/).map(s => s.trim()).filter(s => s.length > 0)
     return instructors.length > 0 ? instructors : ['TBA']
   }
 
@@ -288,7 +296,8 @@ function App() {
     try {
       const subject = course.crs ? course.crs.split(' ')[0] : ''
       const params = new URLSearchParams({ term: course.term, crn: course.crn, subject })
-      const res = await fetch(`/api/evaluate?${params.toString()}`)
+      const res = await fetch(`${API_BASE_URL}/api/evaluate?${params.toString()}`)
+      
       if (!res.ok) {
         throw new Error(`Evaluation lookup failed ${res.status}`)
       }
@@ -314,13 +323,23 @@ function App() {
         }))
       }
     } catch (err) {
-      setEvaluationLookup((prev) => ({
-        ...prev,
-        [key]: {
-          status: 'error',
-          message: err.message || 'Unable to fetch evaluation',
-        },
-      }))
+      // THE INTERCEPTOR: If backend throws 401 or 502, trigger Auth
+      if (err.message.includes('401') || err.message.includes('502')) {
+        setPendingAction({ type: 'eval', course });
+        setShowAuthModal(true);
+        setEvaluationLookup((prev) => ({
+          ...prev,
+          [key]: { status: 'none', message: 'Authentication required' }, // reset loading state
+        }));
+      } else {
+        setEvaluationLookup((prev) => ({
+          ...prev,
+          [key]: {
+            status: 'error',
+            message: err.message || 'Unable to fetch evaluation',
+          },
+        }))
+      }
     }
   }
 
@@ -338,14 +357,14 @@ function App() {
 
     try {
       const params = new URLSearchParams({ term_code: course.term, crn: course.crn })
-      const res = await fetch(`/api/syllabus?${params.toString()}`)
+      const res = await fetch(`${API_BASE_URL}/api/syllabus?${params.toString()}`)
+      
       if (!res.ok) {
         throw new Error(`Syllabus lookup failed ${res.status}`)
       }
 
       const contentType = (res.headers.get('content-type') || '').toLowerCase()
 
-      // New merged backend behavior: /api/syllabus can directly return a PDF stream.
       if (contentType.includes('application/pdf')) {
         const pdfBlob = await res.blob()
         const pdfUrl = URL.createObjectURL(pdfBlob)
@@ -367,15 +386,16 @@ function App() {
           }
         })
 
-        // Automatically open the PDF viewer
         setActiveSyllabusKey(key)
         return
       }
 
-      // Backward compatibility: some API responses still return JSON metadata.
       const data = await res.json()
       if (data.syllabus_url) {
-        const pdfRes = await fetch(data.syllabus_url)
+        const syllabusUrl = data.syllabus_url.startsWith('http')
+          ? data.syllabus_url
+          : `${API_BASE_URL}${data.syllabus_url}`
+        const pdfRes = await fetch(syllabusUrl)
         if (!pdfRes.ok) {
           throw new Error(`Failed to fetch PDF: ${pdfRes.status}`)
         }
@@ -411,13 +431,23 @@ function App() {
         }))
       }
     } catch (err) {
-      setSyllabusLookup((prev) => ({
-        ...prev,
-        [key]: {
-          status: 'error',
-          message: err.message || 'Unable to fetch syllabus',
-        },
-      }))
+      // THE INTERCEPTOR: If backend throws 401 or 502, trigger Auth
+      if (err.message.includes('401') || err.message.includes('502')) {
+        setPendingAction({ type: 'syllabus', course });
+        setShowAuthModal(true);
+        setSyllabusLookup((prev) => ({
+          ...prev,
+          [key]: { status: 'none', message: 'Authentication required' }, // reset loading state
+        }));
+      } else {
+        setSyllabusLookup((prev) => ({
+          ...prev,
+          [key]: {
+            status: 'error',
+            message: err.message || 'Unable to fetch syllabus',
+          },
+        }))
+      }
     }
   }
 
@@ -684,13 +714,11 @@ function App() {
                                       <div className="charts-title">Survey Results</div>
                                       <div className="charts-grid">
                                         {evaluationLookup[getEvaluationKey(course)].charts.map((chart, idx) => {
-                                          // Prepare data for recharts - values are now actual counts
                                           const chartData = chart.labels.map((label, i) => ({
                                             name: label,
                                             count: chart.values[i],
                                           }))
 
-                                          // Use a color palette for bars
                                           const colors = ['#667CC7', '#7B8FD7', '#90A3E7', '#A5B7F7', '#BAC5FF']
 
                                           return (
@@ -785,6 +813,60 @@ function App() {
       <footer className="app-footer">
         <p>Built by Rishabh Rengarajan, Rice '29</p>
       </footer>
+
+      {/* HEADLESS DUO AUTHENTICATION MODAL */}
+      {showAuthModal && (
+        <div className="modal-overlay" style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, background: 'rgba(0,0,0,0.7)', display: 'flex', justifyContent: 'center', alignItems: 'center', zIndex: 1000 }}>
+          <div className="modal-content" style={{ background: '#fff', color: '#333', padding: '2rem', borderRadius: '8px', maxWidth: '400px', width: '90%' }}>
+            <h2 style={{ marginTop: 0, color: '#00205b' }}>ESTHER Login Required</h2>
+            <p style={{ fontSize: '0.95rem', color: '#555', marginBottom: '1.5rem' }}>
+              To view private documents, please log in. You will receive a Duo push to your phone.
+            </p>
+            
+            <form onSubmit={handleAuthSubmit}>
+              <div style={{ marginBottom: '1rem' }}>
+                <label style={{ display: 'block', fontWeight: 'bold', fontSize: '0.9rem', marginBottom: '4px' }}>Rice NetID</label>
+                <input 
+                  type="text" 
+                  value={netid} 
+                  onChange={(e) => setNetid(e.target.value)} 
+                  required 
+                  style={{ width: '100%', boxSizing: 'border-box', padding: '10px', borderRadius: '4px', border: '1px solid #ccc' }}
+                />
+              </div>
+              <div style={{ marginBottom: '1.5rem' }}>
+                <label style={{ display: 'block', fontWeight: 'bold', fontSize: '0.9rem', marginBottom: '4px' }}>Password</label>
+                <input 
+                  type="password" 
+                  value={password} 
+                  onChange={(e) => setPassword(e.target.value)} 
+                  required 
+                  style={{ width: '100%', boxSizing: 'border-box', padding: '10px', borderRadius: '4px', border: '1px solid #ccc' }}
+                />
+              </div>
+              
+              {authError && <p style={{ color: '#d32f2f', fontSize: '0.9rem', marginBottom: '1rem', marginTop: 0 }}>{authError}</p>}
+              
+              <div style={{ display: 'flex', gap: '10px', justifyContent: 'flex-end' }}>
+                <button 
+                  type="button" 
+                  onClick={() => setShowAuthModal(false)} 
+                  style={{ padding: '10px 16px', background: '#e0e0e0', color: '#333', border: 'none', borderRadius: '4px', cursor: 'pointer', fontWeight: 500 }}
+                >
+                  Cancel
+                </button>
+                <button 
+                  type="submit" 
+                  disabled={authLoading}
+                  style={{ padding: '10px 16px', background: '#00205b', color: 'white', border: 'none', borderRadius: '4px', cursor: 'pointer', fontWeight: 500, opacity: authLoading ? 0.7 : 1 }}
+                >
+                  {authLoading ? 'Waiting for Duo...' : 'Login & Send Duo'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

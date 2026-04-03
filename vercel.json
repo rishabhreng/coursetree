@@ -3,6 +3,6 @@
   "outputDirectory": "frontend/dist",
   "framework": "vite",
   "env": {
-    "VITE_API_URL": "http://161.153.8.77:8000"
+    "VITE_API_URL": "https://api-ricecourses.duckdns.org"
   }
 }

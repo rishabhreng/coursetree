@@ -87,6 +87,10 @@ class SyllabusResponse(BaseModel):
     syllabus_url: Optional[str] = None
     message: str
 
+class LoginRequest(BaseModel):
+    netid: str
+    password: str
+
 CoursesResponse = Dict[str, List[Course]]
 
 META_COURSES_URL = 'https://courses.rice.edu/courses/!SWKSCAT.info'
@@ -107,7 +111,21 @@ _stored_session = None
 VALID_SUBJECTS = set()
 SUBJECT_NAMES = {}
 
-
+@app.post("/api/auth")
+async def login_to_esther(req: LoginRequest):
+    """Receives credentials from React and triggers the headless Duo push."""
+    try:
+        # DO NOT log the password here, even for debugging!
+        print(f"[AUTH] Received login request for NetID: {req.netid}")
+        
+        # Call the updated headless Playwright function from earlier
+        await _authenticate_with_duo(req.netid, req.password)
+        
+        return {"success": True, "message": "Successfully authenticated with ESTHER"}
+    except Exception as e:
+        print(f"[AUTH ERROR] {str(e)}")
+        raise HTTPException(status_code=401, detail="Authentication failed. Did you approve the Duo push?")
+    
 def _clear_stored_auth() -> None:
     global _stored_cookies, _stored_session
     _stored_cookies = None
@@ -421,21 +439,40 @@ async def get_syllabus(term_code: str, crn: str) -> SyllabusResponse:
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"Failed to check syllabus: {str(e)}")
 
-async def _authenticate_with_duo():
-    """Authenticate once with Duo using Playwright and return cookies and session."""
+async def _authenticate_with_duo(netid: str, password: str):
+    """
+    Headless authentication: Server types credentials, user approves on phone.
+    """
     global _stored_session
     
     async with async_playwright() as p:
-        print("Launching browser for Duo authentication...")
-        browser = await p.chromium.launch(headless=False)
+        print(f"[AUTH] Launching headless browser for user: {netid}...")
+        # MUST be True on Oracle Cloud
+        browser = await p.chromium.launch(headless=True) 
         context = await browser.new_context()
         page = await context.new_page()
 
         await page.goto("https://esther.rice.edu/")
 
-        # Wait for user to complete Duo authentication
-        await page.wait_for_selector("text='Personal Information'", timeout=0)
-        print("✅ Duo authentication successful!")
+        # 1. Fill in the Rice CAS Login (Update selectors based on Rice's actual login page)
+        try:
+            print("[AUTH] Entering credentials...")
+            # Example selectors - you will need to inspect the Rice login page to get the exact IDs
+            await page.fill("input[name='username']", netid)
+            await page.fill("input[name='password']", password)
+            await page.click("button[name='submit']")
+            
+            # 2. The Duo Push Phase
+            # At this point, Rice's system will automatically send a Duo push to the user's phone.
+            print("[AUTH] Credentials submitted. Waiting for user to approve Duo push on their phone...")
+            
+            # We wait up to 60 seconds for them to tap "Approve" on their phone
+            await page.wait_for_selector("text='Personal Information'", timeout=60000)
+            print("✅ Duo authentication successful!")
+            
+        except Exception as e:
+            await browser.close()
+            raise Exception("Authentication failed. Did you approve the Duo push?")
 
         # Extract cookies
         cookies = await context.cookies()
@@ -448,7 +485,7 @@ async def _authenticate_with_duo():
     for name, value in cookie_dict.items():
         _stored_session.cookies.set(name, value)
 
-    # Prime selfserve cookies so both syllabus and evaluation can reuse the same session.
+    # Prime selfserve cookies
     try:
         _bootstrap_selfserve_context(_stored_session)
     except Exception as e:
