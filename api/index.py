@@ -462,10 +462,10 @@ async def _authenticate_with_duo(netid: str, password: str):
         try:
             print("[AUTH] Entering credentials...")
             # Example selectors - you will need to inspect the Rice login page to get the exact IDs
-            await page.fill("input[name='username']", netid)
-            await page.fill("input[name='password']", password)
-            await page.click("button[name='submit']")
-            
+            await page.fill("#username", netid)
+            await page.fill("#password", password)
+            #await page.click("button[name='eventId_proceed']")
+            await page.keyboard.press("Enter")
             # 2. The Duo Push Phase
             # At this point, Rice's system will automatically send a Duo push to the user's phone.
             print("[AUTH] Credentials submitted. Waiting for user to approve Duo push on their phone...")
@@ -475,6 +475,8 @@ async def _authenticate_with_duo(netid: str, password: str):
             print("✅ Duo authentication successful!")
             
         except Exception as e:
+            print("[AUTH] Failed! Taking screenshot of the browser state...")
+            await page.screenshot(path="debug_duo_error.png", full_page=True)   
             await browser.close()
             raise Exception("Authentication failed. Did you approve the Duo push?")
 
