@@ -9,7 +9,6 @@ from fastapi import FastAPI, HTTPException, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 import sqlite3 as sql
-from matplotlib.pylab import f
 import requests as r
 from requests import Session
 from bs4 import BeautifulSoup
@@ -99,7 +98,12 @@ app = FastAPI()
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=[
+        "http://localhost:3000",           # Local React testing
+        "http://localhost:5173",           # Local Vite testing (if applicable)
+        "https://ricecourses.vercel.app" # Your production Vercel URL
+    ],
+    allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
