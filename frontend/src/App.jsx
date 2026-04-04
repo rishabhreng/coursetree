@@ -1,13 +1,13 @@
 import { useEffect, useRef, useState } from 'react'
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, Cell } from 'recharts'
 import './App.css'
-import { Analytics } from '@vercel/analytics/next';
-import { SpeedInsights } from '@vercel/speed-insights/next';
+import { Analytics } from '@vercel/analytics/react';
+import { SpeedInsights } from '@vercel/speed-insights/react';
 
 const DEFAULT_TERM_CODE = '202710'
 const API_BASE_URL = import.meta.env.VITE_API_URL || (typeof process !== 'undefined' ? process.env.REACT_APP_API_URL : undefined) || 'https://api-ricecourses.duckdns.org'
 
-function MainContainer() {
+function App() {
   const [query, setQuery] = useState('')
   const [termCode, setTermCode] = useState('all')
   const [terms, setTerms] = useState([])
@@ -877,9 +877,9 @@ function MainContainer() {
 function MainContainer() {
   return (
     <>
-    <App />
-    <Analytics />
-    <SpeedInsights />
+      <App />
+      <Analytics />
+      <SpeedInsights />
     </>
   )
 }
