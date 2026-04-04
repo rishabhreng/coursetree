@@ -1,11 +1,13 @@
 import { useEffect, useRef, useState } from 'react'
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, Cell } from 'recharts'
 import './App.css'
+import { Analytics } from '@vercel/analytics/next';
+import { SpeedInsights } from '@vercel/speed-insights/next';
 
 const DEFAULT_TERM_CODE = '202710'
 const API_BASE_URL = import.meta.env.VITE_API_URL || (typeof process !== 'undefined' ? process.env.REACT_APP_API_URL : undefined) || 'https://api-ricecourses.duckdns.org'
 
-function App() {
+function MainContainer() {
   const [query, setQuery] = useState('')
   const [termCode, setTermCode] = useState('all')
   const [terms, setTerms] = useState([])
@@ -25,7 +27,6 @@ function App() {
   const [lastTermCode, setLastTermCode] = useState('')
   const [activeSyllabusKey, setActiveSyllabusKey] = useState(null)
   const syllabusLookupRef = useRef({})
-  
   // Auth State
   const [showAuthModal, setShowAuthModal] = useState(false);
   const [netid, setNetid] = useState('');
@@ -52,7 +53,7 @@ function App() {
       setShowAuthModal(false);
       if (pendingAction?.type === 'syllabus') fetchSyllabus(pendingAction.course);
       if (pendingAction?.type === 'eval') fetchEvaluation(pendingAction.course);
-      
+
     } catch (err) {
       setAuthError(err.message);
     } finally {
@@ -212,7 +213,7 @@ function App() {
   useEffect(() => {
     const timerId = setTimeout(() => {
       doSearch()
-    }, 50)
+    }, 250)
 
     return () => clearTimeout(timerId)
   }, [query, termCode, weightRecency])
@@ -261,7 +262,7 @@ function App() {
           const times = parsed.map((time) => String(time).trim()).filter(Boolean)
           return times.length > 0 ? times : ['TBA']
         }
-      } catch {}
+      } catch { }
     }
     const timesList = timesStr.split(/,|;\s*/).map(s => s.trim()).filter(s => s.length > 0)
     return timesList.length > 0 ? timesList : ['TBA']
@@ -277,7 +278,7 @@ function App() {
           const names = parsed.map((name) => String(name).trim()).filter(Boolean)
           return names.length > 0 ? names : ['TBA']
         }
-      } catch {}
+      } catch { }
     }
     const instructors = instructorStr.split(/,|;\s*/).map(s => s.trim()).filter(s => s.length > 0)
     return instructors.length > 0 ? instructors : ['TBA']
@@ -297,7 +298,7 @@ function App() {
       const subject = course.crs ? course.crs.split(' ')[0] : ''
       const params = new URLSearchParams({ term: course.term, crn: course.crn, subject })
       const res = await fetch(`${API_BASE_URL}/api/evaluate?${params.toString()}`)
-      
+
       if (!res.ok) {
         throw new Error(`Evaluation lookup failed ${res.status}`)
       }
@@ -358,7 +359,7 @@ function App() {
     try {
       const params = new URLSearchParams({ term_code: course.term, crn: course.crn })
       const res = await fetch(`${API_BASE_URL}/api/syllabus?${params.toString()}`)
-      
+
       if (!res.ok) {
         throw new Error(`Syllabus lookup failed ${res.status}`)
       }
@@ -450,6 +451,8 @@ function App() {
       }
     }
   }
+
+
 
   return (
     <div className="app">
@@ -822,41 +825,41 @@ function App() {
             <p style={{ fontSize: '0.95rem', color: '#555', marginBottom: '1.5rem' }}>
               To view private documents, please log in. You will receive a Duo push to your phone.
             </p>
-            
+
             <form onSubmit={handleAuthSubmit}>
               <div style={{ marginBottom: '1rem' }}>
                 <label style={{ display: 'block', fontWeight: 'bold', fontSize: '0.9rem', marginBottom: '4px' }}>Rice NetID</label>
-                <input 
-                  type="text" 
-                  value={netid} 
-                  onChange={(e) => setNetid(e.target.value)} 
-                  required 
+                <input
+                  type="text"
+                  value={netid}
+                  onChange={(e) => setNetid(e.target.value)}
+                  required
                   style={{ width: '100%', boxSizing: 'border-box', padding: '10px', borderRadius: '4px', border: '1px solid #ccc' }}
                 />
               </div>
               <div style={{ marginBottom: '1.5rem' }}>
                 <label style={{ display: 'block', fontWeight: 'bold', fontSize: '0.9rem', marginBottom: '4px' }}>Password</label>
-                <input 
-                  type="password" 
-                  value={password} 
-                  onChange={(e) => setPassword(e.target.value)} 
-                  required 
+                <input
+                  type="password"
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  required
                   style={{ width: '100%', boxSizing: 'border-box', padding: '10px', borderRadius: '4px', border: '1px solid #ccc' }}
                 />
               </div>
-              
+
               {authError && <p style={{ color: '#d32f2f', fontSize: '0.9rem', marginBottom: '1rem', marginTop: 0 }}>{authError}</p>}
-              
+
               <div style={{ display: 'flex', gap: '10px', justifyContent: 'flex-end' }}>
-                <button 
-                  type="button" 
-                  onClick={() => setShowAuthModal(false)} 
+                <button
+                  type="button"
+                  onClick={() => setShowAuthModal(false)}
                   style={{ padding: '10px 16px', background: '#e0e0e0', color: '#333', border: 'none', borderRadius: '4px', cursor: 'pointer', fontWeight: 500 }}
                 >
                   Cancel
                 </button>
-                <button 
-                  type="submit" 
+                <button
+                  type="submit"
                   disabled={authLoading}
                   style={{ padding: '10px 16px', background: '#00205b', color: 'white', border: 'none', borderRadius: '4px', cursor: 'pointer', fontWeight: 500, opacity: authLoading ? 0.7 : 1 }}
                 >
@@ -871,4 +874,14 @@ function App() {
   )
 }
 
-export default App
+function MainContainer() {
+  return (
+    <>
+    <App />
+    <Analytics />
+    <SpeedInsights />
+    </>
+  )
+}
+
+export default MainContainer
