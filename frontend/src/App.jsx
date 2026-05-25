@@ -5,9 +5,32 @@ import { Analytics } from '@vercel/analytics/react';
 import { SpeedInsights } from '@vercel/speed-insights/react';
 
 const DEFAULT_TERM_CODE = '202710'
-const API_BASE_URL = import.meta.env.VITE_API_URL || (typeof process !== 'undefined' ? process.env.REACT_APP_API_URL : undefined) || 'https://api-ricecourses.duckdns.org'
+const API_BASE_URL = import.meta.env.VITE_API_URL
+  || (typeof process !== 'undefined' ? process.env.REACT_APP_API_URL : undefined)
+  || (import.meta.env.DEV ? 'http://localhost:8000' : 'https://api-ricecourses.duckdns.org')
+const ESTHER_AUTH_REQUIRED_MESSAGE = 'ESTHER login required. Use the Login to ESTHER button.'
+const ESTHER_CLIENT_ID_KEY = 'coursetree-esther-client-id'
+
+const getOrCreateClientId = () => {
+  if (typeof window === 'undefined') {
+    return 'server'
+  }
+
+  const existing = window.localStorage.getItem(ESTHER_CLIENT_ID_KEY)
+  if (existing) {
+    return existing
+  }
+
+  const generated = typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+    ? crypto.randomUUID()
+    : `client-${Date.now()}-${Math.random().toString(36).slice(2)}`
+
+  window.localStorage.setItem(ESTHER_CLIENT_ID_KEY, generated)
+  return generated
+}
 
 function App() {
+  const [clientId] = useState(() => getOrCreateClientId())
   const [query, setQuery] = useState('')
   const [termCode, setTermCode] = useState('all')
   const [terms, setTerms] = useState([])
@@ -19,21 +42,50 @@ function App() {
   const [expandedCourses, setExpandedCourses] = useState(new Set())
   const [syllabusLookup, setSyllabusLookup] = useState({})
   const [evaluationLookup, setEvaluationLookup] = useState({})
+  const [instructorEvalLookup, setInstructorEvalLookup] = useState({})
   const [collapsedEvals, setCollapsedEvals] = useState(new Set())
-  const [weightRecency, setWeightRecency] = useState(false)
+  const [collapsedInstructorEvals, setCollapsedInstructorEvals] = useState(new Set())
+  const [collapsedInstructorSections, setCollapsedInstructorSections] = useState(new Set())
   const [hasMore, setHasMore] = useState(false)
   const [currentOffset, setCurrentOffset] = useState(0)
   const [lastQuery, setLastQuery] = useState('')
   const [lastTermCode, setLastTermCode] = useState('')
   const [activeSyllabusKey, setActiveSyllabusKey] = useState(null)
+  const [estherAuthState, setEstherAuthState] = useState('checking')
+  const [showAuthModal, setShowAuthModal] = useState(false)
+  const [netid, setNetid] = useState('')
+  const [password, setPassword] = useState('')
+  const [authLoading, setAuthLoading] = useState(false)
+  const [authError, setAuthError] = useState(null)
   const syllabusLookupRef = useRef({})
-  // Auth State
-  const [showAuthModal, setShowAuthModal] = useState(false);
-  const [netid, setNetid] = useState('');
-  const [password, setPassword] = useState('');
-  const [authLoading, setAuthLoading] = useState(false);
-  const [authError, setAuthError] = useState(null);
-  const [pendingAction, setPendingAction] = useState(null);
+
+  const apiFetch = (path, options = {}) => {
+    const headers = new Headers(options.headers || {})
+    headers.set('X-Client-Id', clientId)
+    return fetch(`${API_BASE_URL}${path}`, {
+      ...options,
+      headers,
+    })
+  }
+
+  useEffect(() => {
+    const fetchAuthStatus = async () => {
+      try {
+        const res = await apiFetch('/api/auth/status')
+        if (!res.ok) {
+          throw new Error(`Auth status failed ${res.status}`)
+        }
+
+        const data = await res.json()
+        setEstherAuthState(data.authenticated ? 'authenticated' : 'unauthenticated')
+      } catch (err) {
+        console.error('Error checking ESTHER auth status:', err)
+        setEstherAuthState('unauthenticated')
+      }
+    }
+
+    fetchAuthStatus()
+  }, [clientId])
 
   const handleAuthSubmit = async (e) => {
     e.preventDefault();
@@ -41,18 +93,20 @@ function App() {
     setAuthError(null);
 
     try {
-      const res = await fetch(`${API_BASE_URL}/api/auth`, {
+      const res = await apiFetch('/api/auth', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ netid, password })
       });
 
-      if (!res.ok) throw new Error("Login failed or Duo push was denied.");
+      if (!res.ok) {
+        const errorBody = await res.json().catch(() => null)
+        throw new Error(errorBody?.detail || 'Login failed or Duo push was denied.')
+      }
 
-      // Success! Hide modal and execute whatever they originally clicked
+      setEstherAuthState('authenticated')
       setShowAuthModal(false);
-      if (pendingAction?.type === 'syllabus') fetchSyllabus(pendingAction.course);
-      if (pendingAction?.type === 'eval') fetchEvaluation(pendingAction.course);
+      setPassword('')
 
     } catch (err) {
       setAuthError(err.message);
@@ -75,7 +129,7 @@ function App() {
 
     const fetchSubjects = async () => {
       try {
-        const res = await fetch(`${API_BASE_URL}/api/subjects`)
+        const res = await apiFetch('/api/subjects')
         if (!res.ok) throw new Error(`Failed to fetch subjects: ${res.status}`)
         const data = await res.json()
         setSubjects(Array.isArray(data) ? data : [])
@@ -128,11 +182,8 @@ function App() {
       if (termCode.trim()) {
         searchParams.set('term_code', termCode.trim())
       }
-      if (termCode === 'all' && weightRecency) {
-        searchParams.set('weight_recency', 'true')
-      }
 
-      const res = await fetch(`${API_BASE_URL}/api/courses/?${searchParams.toString()}`)
+      const res = await apiFetch(`/api/courses/?${searchParams.toString()}`)
       if (!res.ok) throw new Error(`Search failed ${res.status}`)
       const json = await res.json()
 
@@ -164,11 +215,8 @@ function App() {
       if (lastTermCode) {
         searchParams.set('term_code', lastTermCode)
       }
-      if (lastTermCode === 'all' && weightRecency) {
-        searchParams.set('weight_recency', 'true')
-      }
 
-      const res = await fetch(`${API_BASE_URL}/api/courses/?${searchParams.toString()}`)
+      const res = await apiFetch(`/api/courses/?${searchParams.toString()}`)
       if (!res.ok) throw new Error(`Search failed ${res.status}`)
       const json = await res.json()
 
@@ -216,7 +264,7 @@ function App() {
     }, 250)
 
     return () => clearTimeout(timerId)
-  }, [query, termCode, weightRecency])
+  }, [query, termCode])
 
   useEffect(() => {
     syllabusLookupRef.current = syllabusLookup
@@ -252,6 +300,26 @@ function App() {
     setCollapsedEvals(newCollapsed)
   }
 
+  const toggleInstructorEvalCollapsed = (evalKey) => {
+    const newCollapsed = new Set(collapsedInstructorEvals)
+    if (newCollapsed.has(evalKey)) {
+      newCollapsed.delete(evalKey)
+    } else {
+      newCollapsed.add(evalKey)
+    }
+    setCollapsedInstructorEvals(newCollapsed)
+  }
+
+  const toggleInstructorSectionCollapsed = (sectionKey) => {
+    const newCollapsed = new Set(collapsedInstructorSections)
+    if (newCollapsed.has(sectionKey)) {
+      newCollapsed.delete(sectionKey)
+    } else {
+      newCollapsed.add(sectionKey)
+    }
+    setCollapsedInstructorSections(newCollapsed)
+  }
+
   const formatMeetingTimes = (timesStr) => {
     if (!timesStr || timesStr === 'TBA' || timesStr === '[]') return ['TBA']
     const trimmed = timesStr.trim()
@@ -284,7 +352,84 @@ function App() {
     return instructors.length > 0 ? instructors : ['TBA']
   }
 
+  const getInstructorNamesForCourse = (course) => {
+    return formatInstructors(course.instructors).filter(
+      (name) => name && name.toUpperCase() !== 'TBA'
+    )
+  }
+
   const getEvaluationKey = (course) => `${course.term}-${course.crn}`
+  const getInstructorEvalKey = (course) => `instr-${course.term}-${course.crn}`
+
+  const formatEvalHtml = (html) => {
+    if (!html) return ''
+    return html
+      .replace(/<div class="charts">[\s\S]*?<div class="comments">/g, '<div class="comments">')
+      .replace(/<div class="chart">[\s\S]*?<\/div>\s*<\/div>/g, '')
+      .replace(/<img[^>]*>/g, '')
+  }
+
+  const renderCharts = (charts) => {
+    if (!charts || charts.length === 0) return null
+
+    return (
+      <div className="charts-section">
+        <div className="charts-title">Survey Results</div>
+        <div className="charts-grid">
+          {charts.map((chart, idx) => {
+            const chartData = chart.labels.map((label, i) => ({
+              name: label,
+              percent: chart.values[i],
+            }))
+
+            const colors = ['#667CC7', '#7B8FD7', '#90A3E7', '#A5B7F7', '#BAC5FF']
+
+            return (
+              <div key={idx} className="chart-container">
+                <div className="chart-title">{chart.title}</div>
+                <div className="chart-meta">
+                  <span>Total Responses: {chart.total}</span>
+                </div>
+                <div className="chart-wrapper">
+                  <ResponsiveContainer width="100%" height={200}>
+                    <BarChart data={chartData} margin={{ top: 10, right: 30, left: 0, bottom: 50 }}>
+                      <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.1)" />
+                      <XAxis
+                        dataKey="name"
+                        angle={-45}
+                        textAnchor="end"
+                        height={80}
+                        interval={0}
+                        tick={{ fill: '#E8E8E8', fontSize: 12, fontWeight: 500 }}
+                      />
+                      <YAxis tick={{ fill: '#E8E8E8' }} />
+                      <Tooltip
+                        contentStyle={{
+                          backgroundColor: 'rgba(0, 26, 71, 0.95)',
+                          border: '1px solid rgba(168, 85, 247, 0.3)',
+                          borderRadius: '4px',
+                          color: '#E8E8E8',
+                        }}
+                        labelStyle={{ color: '#E8E8E8' }}
+                        itemStyle={{ color: '#E8E8E8' }}
+                        formatter={(value) => [`${value}%`, 'Percent']}
+                        wrapperStyle={{ color: '#E8E8E8' }}
+                      />
+                      <Bar dataKey="percent" radius={[8, 8, 0, 0]}>
+                        {chartData.map((_, i) => (
+                          <Cell key={`cell-${i}`} fill={colors[i % colors.length]} />
+                        ))}
+                      </Bar>
+                    </BarChart>
+                  </ResponsiveContainer>
+                </div>
+              </div>
+            )
+          })}
+        </div>
+      </div>
+    )
+  }
 
   const fetchEvaluation = async (course) => {
     const key = getEvaluationKey(course)
@@ -297,7 +442,7 @@ function App() {
     try {
       const subject = course.crs ? course.crs.split(' ')[0] : ''
       const params = new URLSearchParams({ term: course.term, crn: course.crn, subject })
-      const res = await fetch(`${API_BASE_URL}/api/evaluate?${params.toString()}`)
+      const res = await apiFetch(`/api/evaluate?${params.toString()}`)
 
       if (!res.ok) {
         throw new Error(`Evaluation lookup failed ${res.status}`)
@@ -324,13 +469,11 @@ function App() {
         }))
       }
     } catch (err) {
-      // THE INTERCEPTOR: If backend throws 401 or 502, trigger Auth
-      if (err.message.includes('401') || err.message.includes('502')) {
-        setPendingAction({ type: 'eval', course });
-        setShowAuthModal(true);
+      if (err.message.includes('401') || err.message.includes('403')) {
+        setEstherAuthState('unauthenticated')
         setEvaluationLookup((prev) => ({
           ...prev,
-          [key]: { status: 'none', message: 'Authentication required' }, // reset loading state
+          [key]: { status: 'none', message: ESTHER_AUTH_REQUIRED_MESSAGE },
         }));
       } else {
         setEvaluationLookup((prev) => ({
@@ -338,6 +481,76 @@ function App() {
           [key]: {
             status: 'error',
             message: err.message || 'Unable to fetch evaluation',
+          },
+        }))
+      }
+    }
+  }
+
+  const fetchInstructorEvaluations = async (course) => {
+    const key = getInstructorEvalKey(course)
+    const instructorNames = getInstructorNamesForCourse(course)
+
+    if (instructorNames.length === 0) {
+      setInstructorEvalLookup((prev) => ({
+        ...prev,
+        [key]: { status: 'none', message: 'No instructors listed for this course' },
+      }))
+      return
+    }
+
+    setInstructorEvalLookup((prev) => ({
+      ...prev,
+      [key]: { status: 'loading', message: 'Loading instructor evaluations...' },
+    }))
+
+    try {
+      const params = new URLSearchParams({
+        term: course.term,
+        crn: course.crn,
+        instructor_names: instructorNames.join('|'),
+      })
+      const res = await apiFetch(`/api/instructor-evaluate?${params.toString()}`)
+
+      if (!res.ok) {
+        throw new Error(`Instructor evaluation lookup failed ${res.status}`)
+      }
+
+      const data = await res.json()
+      if (data.success && Array.isArray(data.results)) {
+        setInstructorEvalLookup((prev) => ({
+          ...prev,
+          [key]: {
+            status: 'available',
+            message: 'Instructor evaluations loaded',
+            results: data.results,
+            missing_instructors: data.missing_instructors || [],
+          },
+        }))
+      } else {
+        setInstructorEvalLookup((prev) => ({
+          ...prev,
+          [key]: {
+            status: 'none',
+            message: data.message || 'No instructor evaluation data found',
+            results: data.results || [],
+            missing_instructors: data.missing_instructors || [],
+          },
+        }))
+      }
+    } catch (err) {
+      if (err.message.includes('401') || err.message.includes('403')) {
+        setEstherAuthState('unauthenticated')
+        setInstructorEvalLookup((prev) => ({
+          ...prev,
+          [key]: { status: 'none', message: ESTHER_AUTH_REQUIRED_MESSAGE },
+        }));
+      } else {
+        setInstructorEvalLookup((prev) => ({
+          ...prev,
+          [key]: {
+            status: 'error',
+            message: err.message || 'Unable to fetch instructor evaluations',
           },
         }))
       }
@@ -358,7 +571,7 @@ function App() {
 
     try {
       const params = new URLSearchParams({ term_code: course.term, crn: course.crn })
-      const res = await fetch(`${API_BASE_URL}/api/syllabus?${params.toString()}`)
+      const res = await apiFetch(`/api/syllabus?${params.toString()}`)
 
       if (!res.ok) {
         throw new Error(`Syllabus lookup failed ${res.status}`)
@@ -432,13 +645,11 @@ function App() {
         }))
       }
     } catch (err) {
-      // THE INTERCEPTOR: If backend throws 401 or 502, trigger Auth
-      if (err.message.includes('401') || err.message.includes('502')) {
-        setPendingAction({ type: 'syllabus', course });
-        setShowAuthModal(true);
+      if (err.message.includes('401') || err.message.includes('403')) {
+        setEstherAuthState('unauthenticated')
         setSyllabusLookup((prev) => ({
           ...prev,
-          [key]: { status: 'none', message: 'Authentication required' }, // reset loading state
+          [key]: { status: 'none', message: ESTHER_AUTH_REQUIRED_MESSAGE },
         }));
       } else {
         setSyllabusLookup((prev) => ({
@@ -457,8 +668,27 @@ function App() {
   return (
     <div className="app">
       <div className="header">
-        <h1>Rice Course Explorer</h1>
-        <p className="tagline">Search for courses across all terms</p>
+        <div className="header-top">
+          <div className="header-copy">
+            <h1>Rice Course Explorer</h1>
+            <p className="tagline">Search for courses across all terms</p>
+          </div>
+          <div className="esther-auth-panel">
+            <button
+              type="button"
+              className="esther-auth-btn"
+              onClick={() => setShowAuthModal(true)}
+            >
+              Login to ESTHER
+            </button>
+            <span className={`esther-auth-status ${estherAuthState === 'authenticated' ? 'active' : 'inactive'}`}>
+              {estherAuthState === 'authenticated' ? 'Authenticated' : 'Not signed in'}
+            </span>
+          </div>
+        </div>
+        {/* <div className="esther-auth-disclaimer">
+          Credentials are not saved by this site. They are sent directly to ESTHER for Duo-backed authentication, and this login is only required for syllabi and evaluations viewing.
+        </div> */}
       </div>
 
       <div className="container">
@@ -535,20 +765,6 @@ function App() {
                 )}
               </select>
             </div>
-
-            {termCode === 'all' && (
-              <div className="checkbox-group">
-                <label htmlFor="weight-recency" className="checkbox-label">
-                  <input
-                    id="weight-recency"
-                    type="checkbox"
-                    checked={weightRecency}
-                    onChange={(e) => setWeightRecency(e.target.checked)}
-                  />
-                  <span>Weight by Recency</span>
-                </label>
-              </div>
-            )}
           </div>
 
           {error && <p className="status error">❌ {error}</p>}
@@ -608,6 +824,7 @@ function App() {
                   <div className="course-instances">
                     {displayInstances.map((course) => {
                       const syllabusState = syllabusLookup[getSyllabusKey(course)]
+                      const instructorEvalState = instructorEvalLookup[getInstructorEvalKey(course)]
                       const coursePageUrl = course.course_page || `https://courses.rice.edu/courses/courses/!SWKSCAT.cat?p_action=COURSE&p_term=${course.term}&p_crn=${course.crn}`
 
                       return (
@@ -669,6 +886,14 @@ function App() {
                             >
                               {evaluationLookup[getEvaluationKey(course)]?.status === 'loading' ? 'Loading...' : 'Get Evaluation'}
                             </button>
+                            <button
+                              type="button"
+                              className="instructor-eval-btn"
+                              onClick={() => fetchInstructorEvaluations(course)}
+                              disabled={instructorEvalState?.status === 'loading'}
+                            >
+                              {instructorEvalState?.status === 'loading' ? 'Loading...' : 'Show Instructor Evals'}
+                            </button>
                           </div>
 
                           {syllabusState?.status === 'available' && syllabusState.url && (
@@ -712,75 +937,90 @@ function App() {
                               </button>
                               {!collapsedEvals.has(getEvaluationKey(course)) && (
                                 <div className="evaluation-results">
-                                  {evaluationLookup[getEvaluationKey(course)]?.charts && evaluationLookup[getEvaluationKey(course)].charts.length > 0 && (
-                                    <div className="charts-section">
-                                      <div className="charts-title">Survey Results</div>
-                                      <div className="charts-grid">
-                                        {evaluationLookup[getEvaluationKey(course)].charts.map((chart, idx) => {
-                                          const chartData = chart.labels.map((label, i) => ({
-                                            name: label,
-                                            count: chart.values[i],
-                                          }))
-
-                                          const colors = ['#667CC7', '#7B8FD7', '#90A3E7', '#A5B7F7', '#BAC5FF']
-
-                                          return (
-                                            <div key={idx} className="chart-container">
-                                              <div className="chart-title">{chart.title}</div>
-                                              <div className="chart-meta">
-                                                <span>Total Responses: {chart.total}</span>
-                                              </div>
-                                              <div className="chart-wrapper">
-                                                <ResponsiveContainer width="100%" height={200}>
-                                                  <BarChart data={chartData} margin={{ top: 10, right: 30, left: 0, bottom: 50 }}>
-                                                    <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.1)" />
-                                                    <XAxis
-                                                      dataKey="name"
-                                                      angle={-45}
-                                                      textAnchor="end"
-                                                      height={80}
-                                                      interval={0}
-                                                      tick={{ fill: '#E8E8E8', fontSize: 12, fontWeight: 500 }}
-                                                    />
-                                                    <YAxis tick={{ fill: '#E8E8E8' }} />
-                                                    <Tooltip
-                                                      contentStyle={{
-                                                        backgroundColor: 'rgba(0, 26, 71, 0.95)',
-                                                        border: '1px solid rgba(168, 85, 247, 0.3)',
-                                                        borderRadius: '4px',
-                                                        color: '#E8E8E8',
-                                                      }}
-                                                      labelStyle={{ color: '#E8E8E8' }}
-                                                      formatter={(value) => [value, 'Count']}
-                                                      wrapperStyle={{ color: '#E8E8E8' }}
-                                                    />
-                                                    <Bar dataKey="count" radius={[8, 8, 0, 0]}>
-                                                      {chartData.map((_, i) => (
-                                                        <Cell key={`cell-${i}`} fill={colors[i % colors.length]} />
-                                                      ))}
-                                                    </Bar>
-                                                  </BarChart>
-                                                </ResponsiveContainer>
-                                              </div>
-                                            </div>
-                                          )
-                                        })}
-                                      </div>
-                                    </div>
-                                  )}
+                                  {renderCharts(evaluationLookup[getEvaluationKey(course)]?.charts)}
                                   <div className="comments-section">
                                     <div
                                       dangerouslySetInnerHTML={{
-                                        __html: evaluationLookup[getEvaluationKey(course)]?.html
-                                          .replace(/<div class="charts">[\s\S]*?<div class="comments">/g, '<div class="comments">')
-                                          .replace(/<div class="chart">[\s\S]*?<\/div>\s*<\/div>/g, '')
-                                          .replace(/<img[^>]*>/g, ''),
+                                        __html: formatEvalHtml(evaluationLookup[getEvaluationKey(course)]?.html),
                                       }}
                                     />
                                   </div>
                                 </div>
                               )}
                             </>
+                          )}
+
+                          {instructorEvalState?.status === 'available' && (
+                            <>
+                              <button
+                                type="button"
+                                className="collapse-instructor-eval-btn"
+                                onClick={() => toggleInstructorEvalCollapsed(getInstructorEvalKey(course))}
+                              >
+                                {collapsedInstructorEvals.has(getInstructorEvalKey(course)) ? '▸ Show Instructor Evals' : '▾ Hide Instructor Evals'}
+                              </button>
+                              {!collapsedInstructorEvals.has(getInstructorEvalKey(course)) && (
+                                <div className="instructor-eval-results">
+                                  {instructorEvalState?.missing_instructors?.length > 0 && (
+                                    <p className="evaluation-status neutral">
+                                      No instructor match for: {instructorEvalState.missing_instructors.join(', ')}
+                                    </p>
+                                  )}
+                                  {instructorEvalState?.results?.map((result) => {
+                                    const instructorLabel = result.instructor_name || result.instructor_id || 'Instructor'
+                                    const instructorKey = `${getInstructorEvalKey(course)}-${result.instructor_id || instructorLabel}`
+                                    const isCollapsed = collapsedInstructorSections.has(instructorKey)
+
+                                    return (
+                                      <div key={instructorKey} className="instructor-eval-card">
+                                        <button
+                                          type="button"
+                                          className="collapse-instructor-btn"
+                                          onClick={() => toggleInstructorSectionCollapsed(instructorKey)}
+                                        >
+                                          {isCollapsed ? `▸ ${instructorLabel}` : `▾ ${instructorLabel}`}
+                                        </button>
+                                        {!isCollapsed && (
+                                          <div className="instructor-eval-sections">
+                                            {(!result.sections || result.sections.length === 0) && (
+                                              <p className="evaluation-status neutral">{result.message || 'No evaluation data found'}</p>
+                                            )}
+                                            {result.sections?.map((section, idx) => (
+                                              <div key={`${instructorKey}-${idx}`} className="instructor-eval-section">
+                                                <div className="instructor-eval-header">
+                                                  <div className="eval-course">{section.course || section.course_code || 'Course evaluation'}</div>
+                                                  <div className="eval-meta">
+                                                    {section.term_label && <span>{section.term_label}</span>}
+                                                    {section.crn && <span>CRN: {section.crn}</span>}
+                                                    {section.enrolled && <span>Enrolled: {section.enrolled}</span>}
+                                                  </div>
+                                                </div>
+                                                {renderCharts(section.charts)}
+                                                <div className="comments-section">
+                                                  <div
+                                                    dangerouslySetInnerHTML={{
+                                                      __html: formatEvalHtml(section.html),
+                                                    }}
+                                                  />
+                                                </div>
+                                              </div>
+                                            ))}
+                                          </div>
+                                        )}
+                                      </div>
+                                    )
+                                  })}
+                                </div>
+                              )}
+                            </>
+                          )}
+
+                          {instructorEvalState?.status === 'none' && (
+                            <p className="evaluation-status neutral">{instructorEvalState?.message}</p>
+                          )}
+
+                          {instructorEvalState?.status === 'error' && (
+                            <p className="evaluation-status error">{instructorEvalState?.message}</p>
                           )}
 
                           {evaluationLookup[getEvaluationKey(course)]?.status === 'none' && (
@@ -817,53 +1057,53 @@ function App() {
         <p>Built by Rishabh Rengarajan, Rice '29</p>
       </footer>
 
-      {/* HEADLESS DUO AUTHENTICATION MODAL */}
       {showAuthModal && (
-        <div className="modal-overlay" style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, background: 'rgba(0,0,0,0.7)', display: 'flex', justifyContent: 'center', alignItems: 'center', zIndex: 1000 }}>
-          <div className="modal-content" style={{ background: '#fff', color: '#333', padding: '2rem', borderRadius: '8px', maxWidth: '400px', width: '90%' }}>
-            <h2 style={{ marginTop: 0, color: '#00205b' }}>ESTHER Login Required</h2>
-            <p style={{ fontSize: '0.95rem', color: '#555', marginBottom: '1.5rem' }}>
-              To view private documents, please log in. You will receive a Duo push to your phone.
+        <div className="modal-overlay auth-modal-overlay">
+          <div className="modal-content auth-modal-content">
+            <h2 className="auth-modal-title">ESTHER Login</h2>
+            <div className="auth-modal-disclaimer">
+              Credentials are not saved by this site. They are sent directly to ESTHER for Duo-backed authentication, and this login is only required for syllabi and evaluations viewing.
+            </div>
+            <p className="auth-modal-copy">
+              Sign in with your Rice NetID to open an ESTHER session for this browser.
             </p>
 
             <form onSubmit={handleAuthSubmit}>
-              <div style={{ marginBottom: '1rem' }}>
-                <label style={{ display: 'block', fontWeight: 'bold', fontSize: '0.9rem', marginBottom: '4px' }}>Rice NetID</label>
+              <div className="auth-field">
+                <label>Rice NetID</label>
                 <input
                   type="text"
                   value={netid}
                   onChange={(e) => setNetid(e.target.value)}
                   required
-                  style={{ width: '100%', boxSizing: 'border-box', padding: '10px', borderRadius: '4px', border: '1px solid #ccc' }}
                 />
               </div>
-              <div style={{ marginBottom: '1.5rem' }}>
-                <label style={{ display: 'block', fontWeight: 'bold', fontSize: '0.9rem', marginBottom: '4px' }}>Password</label>
+              <div className="auth-field">
+                <label>Password</label>
                 <input
                   type="password"
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
                   required
-                  style={{ width: '100%', boxSizing: 'border-box', padding: '10px', borderRadius: '4px', border: '1px solid #ccc' }}
                 />
               </div>
 
-              {authError && <p style={{ color: '#d32f2f', fontSize: '0.9rem', marginBottom: '1rem', marginTop: 0 }}>{authError}</p>}
+              {authError && <p className="auth-error">{authError}</p>}
 
-              <div style={{ display: 'flex', gap: '10px', justifyContent: 'flex-end' }}>
+              <div className="auth-actions">
                 <button
                   type="button"
                   onClick={() => setShowAuthModal(false)}
-                  style={{ padding: '10px 16px', background: '#e0e0e0', color: '#333', border: 'none', borderRadius: '4px', cursor: 'pointer', fontWeight: 500 }}
+                  className="auth-cancel-btn"
                 >
                   Cancel
                 </button>
                 <button
                   type="submit"
                   disabled={authLoading}
-                  style={{ padding: '10px 16px', background: '#00205b', color: 'white', border: 'none', borderRadius: '4px', cursor: 'pointer', fontWeight: 500, opacity: authLoading ? 0.7 : 1 }}
+                  className="auth-submit-btn"
                 >
-                  {authLoading ? 'Waiting for Duo...' : 'Login & Send Duo'}
+                  {authLoading ? 'Waiting for Duo...' : 'Login and Send Duo'}
                 </button>
               </div>
             </form>

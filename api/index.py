@@ -5,7 +5,7 @@ from typing import Dict, List, Optional
 from xml.etree import ElementTree as ET
 from urllib.parse import parse_qs, urlparse, unquote
 
-from fastapi import FastAPI, HTTPException, Depends
+from fastapi import FastAPI, HTTPException, Depends, Header
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 import sqlite3 as sql
@@ -15,54 +15,28 @@ from bs4 import BeautifulSoup
 from playwright.async_api import async_playwright
 
 from pydantic import BaseModel
+from pathlib import Path
+import logging
 
+# =================
+# ===== SETUP =====
+# =================
 
-BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-API_DIR = os.path.dirname(os.path.abspath(__file__))
+l = logging.getLogger("course_api")
+logging.basicConfig(level=logging.INFO)
+DB_PATH = Path.cwd().parent / "main.db"
+l.info(f"Using main DB at: {DB_PATH}")
 
-
-def _resolve_db_path(filename: str) -> str:
-    candidates = [
-        os.path.join(BASE_DIR, filename),
-        os.path.join(API_DIR, filename),
-        os.path.join(os.getcwd(), filename),
-    ]
-    for path in candidates:
-        if os.path.exists(path):
-            return path
-    return candidates[0]
-
-
-def _validate_sqlite_path(path: str, label: str) -> str:
-    if not os.path.exists(path):
-        raise RuntimeError(f"{label} database file not found at {path}")
-
-    with open(path, 'rb') as f:
-        header = f.read(64)
-
-    if header.startswith(b'SQLite format 3\x00'):
-        return path
-
-    # Git LFS pointer files are plain text and often show up in serverless deploys.
-    if header.startswith(b'version https://git-lfs.github.com/spec/v1'):
-        raise RuntimeError(
-            f"{label} at {path} is a Git LFS pointer, not a SQLite file. "
-            "Ensure Vercel has access to actual LFS objects or commit this DB directly."
-        )
-
-    raise RuntimeError(f"{label} at {path} is not a valid SQLite database file")
-
-
-DB_PATH = _validate_sqlite_path(_resolve_db_path('main.db'), 'Main')
-print(f"Using main DB at: {DB_PATH}")
-
-DEFAULT_COURSE_TERM_CODE = '202710'
+DEFAULT_COURSE_TERM_CODE = "202710"
+METADATA_COURSES_URL = "https://courses.rice.edu/courses/!SWKSCAT.info"
+SYLLABUS_BASE_URL = "https://esther.rice.edu/selfserve/!bwzkpsyl.v_viewDoc"
 
 # Common acronym/abbreviation mappings to expand search queries
 ACRONYM_MAP = {
-    'UG': 'UNDERGRADUATE',
-    'GRAD': 'GRADUATE',
+    "UG": "UNDERGRADUATE",
+    "GRAD": "GRADUATE",
 }
+
 
 class Course(BaseModel):
     term: str
@@ -74,195 +48,185 @@ class Course(BaseModel):
     credits: Optional[str] = None
     course_page: Optional[str] = None
 
+
 class Term(BaseModel):
     code: str
     term: str
+
 
 class Subject(BaseModel):
     code: str
     subject: str
 
+
 class SyllabusResponse(BaseModel):
     syllabus_url: Optional[str] = None
     message: str
+
 
 class LoginRequest(BaseModel):
     netid: str
     password: str
 
+
 CoursesResponse = Dict[str, List[Course]]
 
-META_COURSES_URL = 'https://courses.rice.edu/courses/!SWKSCAT.info'
-
 app = FastAPI()
-
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
-        "http://localhost:3000",           # Local React testing
-        "http://localhost:5173",           # Local Vite testing (if applicable)
-        "https://ricecourses.vercel.app" # Your production Vercel URL
+        # "http://localhost:3000",
+        "http://localhost:5173",  # local frontend dev
+        "https://ricecourses.vercel.app",  # deployed frontend
     ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# Global storage for cookies from Duo authentication
-_stored_cookies = None
-_stored_session = None
-
 VALID_SUBJECTS = set()
 SUBJECT_NAMES = {}
 
+
+# ======================
+# ===== AUTH LOGIC =====
+# ======================
+
+AUTH_SESSIONS: Dict[str, Session] = {}
+
+
+def _require_client_id(client_id: Optional[str]) -> str:
+    if not client_id:
+        raise HTTPException(status_code=400, detail="Missing X-Client-Id header")
+    return client_id
+
+
+def _store_client_session(client_id: str, session: Session) -> None:
+    AUTH_SESSIONS[client_id] = session
+
+
+def _clear_client_auth(client_id: str) -> None:
+    AUTH_SESSIONS.pop(client_id, None)
+
+
+async def _ensure_authenticated_session(client_id: str) -> Session:
+    session = AUTH_SESSIONS.get(client_id)
+    if session is None:
+        raise HTTPException(status_code=401, detail="Authentication required")
+    return session
+
+
 @app.post("/api/auth")
-async def login_to_esther(req: LoginRequest):
-    """Receives credentials from React and triggers the headless Duo push."""
+async def login(
+    req: LoginRequest,
+    x_client_id: Optional[str] = Header(default=None, alias="X-Client-Id"),
+):
+    """Receives credentials from React and triggers headless Duo push."""
     try:
+        client_id = _require_client_id(x_client_id)
         # DO NOT log the password here, even for debugging!
-        print(f"[AUTH] Received login request for NetID: {req.netid}")
-        
+        l.info(f"[AUTH] Received login request for NetID: {req.netid}")
+
         # Call the updated headless Playwright function from earlier
-        await _authenticate_with_duo(req.netid, req.password)
-        
+        session = await _authenticate_with_duo(req.netid, req.password)
+        _store_client_session(client_id, session)
+
         return {"success": True, "message": "Successfully authenticated with ESTHER"}
     except Exception as e:
-        print(f"[AUTH ERROR] {str(e)}")
-        raise HTTPException(status_code=401, detail="Authentication failed. Did you approve the Duo push?")
-    
-def _clear_stored_auth() -> None:
-    global _stored_cookies, _stored_session
-    _stored_cookies = None
-    _stored_session = None
+        l.error(f"[AUTH ERROR] {str(e)}")
+        raise HTTPException(
+            status_code=401,
+            detail="Authentication failed. Did you approve the Duo push?",
+        )
 
 
-def _sync_stored_cookies_from_session() -> None:
-    global _stored_cookies, _stored_session
-    if _stored_session is not None:
-        _stored_cookies = _stored_session.cookies.get_dict()
-
+@app.get("/api/auth/status")
+async def auth_status(
+    x_client_id: Optional[str] = Header(default=None, alias="X-Client-Id")
+):
+    client_id = _require_client_id(x_client_id)
+    return {"authenticated": client_id in AUTH_SESSIONS}
 
 def _is_pdf_response(content: bytes) -> bool:
-    return content.startswith(b'%PDF')
+    return content.startswith(b"%PDF")
 
 
-def _looks_like_auth_expired(content: bytes) -> bool:
-    sample = content[:2000].lower()
-    return (
-        b'cas' in sample
-        or b'netid' in sample
-        or b'duo' in sample
-        or b'sign in' in sample
-        or b'personal information' in sample
-    )
-
-
+# TODO: eventually remove for same reason
 def _looks_like_direct_link_block(content: bytes) -> bool:
     sample = content[:4000].lower()
     return (
-        b'direct link' in sample
-        or b'direct-link' in sample
-        or b'access denied' in sample
-        or b'not authorized' in sample
+        b"direct link" in sample
+        or b"direct-link" in sample
+        or b"access denied" in sample
+        or b"not authorized" in sample
     )
 
 
 def _fetch_syllabus_pdf_with_session(session: Session, term_code: str, crn: str):
-    url = "https://esther.rice.edu/selfserve/!bwzkpsyl.v_viewDoc"
     params = {
-        'term': term_code,
-        'type': 'SYLLABUS',
-        'crn': crn,
+        "term": term_code,
+        "type": "SYLLABUS",
+        "crn": crn,
     }
     headers = {
-        'Referer': 'https://esther.rice.edu/selfserve/swkscmt.main',
-        'Accept': 'application/pdf,application/octet-stream;q=0.9,*/*;q=0.8',
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+        "Referer": "https://esther.rice.edu/selfserve/swkscmt.main",
+        "Accept": "application/pdf,application/octet-stream;q=0.9,*/*;q=0.8",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",  # TODO: strip down to bare minimum requirements
     }
-    return session.get(url, params=params, headers=headers, timeout=15, stream=True)
+    return session.get(
+        SYLLABUS_BASE_URL, params=params, headers=headers, timeout=15, stream=True
+    )
 
 
+# TODO: remove eventually
 def _bootstrap_selfserve_context(session: Session) -> None:
     """Warm key self-serve pages that commonly establish routing/session context."""
     session.get("https://esther.rice.edu/selfserve/", timeout=15)
     session.get("https://esther.rice.edu/selfserve/swkscmt.main", timeout=15)
 
 
-async def _ensure_authenticated_session() -> Session:
-    """Return an authenticated shared session, creating one via Duo when needed."""
-    global _stored_cookies, _stored_session
-
-    if _stored_cookies is None or _stored_session is None:
-        _stored_cookies = await _authenticate_with_duo()
-
-    return _stored_session
-
-
-# --- DATABASE DEPENDENCY ---
 def get_db():
-    # In Vercel, we open in read-only mode to be safe/efficient
-    # check_same_thread=False is required for SQLite + FastAPI
-    conn = sql.connect(f"file:{DB_PATH}?mode=ro", uri=True, check_same_thread=False)
+    # uri needed to enable read-only mode, check_same_thread=False allows connection across multiple threads
+    conn = sql.connect(
+        f"file:{DB_PATH}?mode=ro", timeout=15.0, uri=True, check_same_thread=False
+    )
     conn.row_factory = sql.Row
     try:
         yield conn
     finally:
         conn.close()
-        
+
+
 def _clean_query(q: str) -> str:
     """Utility function to clean and standardize the search query"""
     q = q.strip().upper()
     # Expand common acronyms
-    for acronym, full in ACRONYM_MAP.items():
+    for (
+        acronym,
+        full,
+    ) in ACRONYM_MAP.items():  # TODO: maybe remove this, doesn't add much value
         if q == acronym:
             return full
     return q
 
-def _convert_to_fts_query(q: str) -> str:
-    """Convert a cleaned query into an FTS5 query string based on its format"""
-    # CASE 1: CRN (5 Digits)
-    if len(q) == 5 and q.isdigit():
-        return f"crn : {q}"
-
-    # CASE 2: Course Code (COMP 140 or COMP140)
-    elif re.match(r'^[A-Z]{4}\s*\d{3}$', q):
-        match = re.search(r'([A-Z]{4})\s*(\d{3})', q)
-        dpt, num = match.group(1), match.group(2)
-        return f'crs : "{dpt} {num}"'
-
-    # CASE 3: Subject/Dept Only (match against VALID_SUBJECTS)
-    elif len(q) == 4 and q.isalpha() and q in VALID_SUBJECTS:
-        return f"crs : {q}*"
-
-    # CASE 4: Course Number Only (140)
-    elif len(q) == 3 and q.isdigit():
-        return f"crs : {q}"
-
-    # CASE 5: general fuzzy search
-    else:
-        # Replace hyphens with spaces to handle hyphenated names/terms
-        q_normalized = q.replace('-', ' ')
-        words = q_normalized.split()
-        if not words: return ""
-        # Standard multi-word prefix search across all columns
-        return " AND ".join([f"{w}*" for w in words])
 
 def _row_to_course(row: sql.Row) -> Course:
     row_dict = dict(row)
-    term_value = row_dict.get('term', '')
-    term_code = term_value.split('courses_', 1)[1]
+    term_value = row_dict.get("term", "")
+    term_code = term_value.split("courses_", 1)[1]
 
     data = {
-            'term': term_code,
-            'crn': row_dict.get('crn'),
-            'crs': row_dict.get('crs'),
-            'title': row_dict.get('title'),
-            'instructors': row_dict.get('instructors') or 'TBA',
-            'meeting_times': row_dict.get('meeting_times'),
-            'credits': row_dict.get('credits'),
-            'course_page': row_dict.get('course_page')
-        }
+        "term": term_code,
+        "crn": row_dict.get("crn"),
+        "crs": row_dict.get("crs"),
+        "title": row_dict.get("title"),
+        "instructors": row_dict.get("instructors") or "TBA",
+        "meeting_times": row_dict.get("meeting_times"),
+        "credits": row_dict.get("credits"),
+        "course_page": row_dict.get("course_page"),
+    }
     return Course(**data)
+
 
 def _group_courses(rows: List[sql.Row]) -> CoursesResponse:
     grouped: Dict[str, List[Course]] = defaultdict(list)
@@ -272,70 +236,139 @@ def _group_courses(rows: List[sql.Row]) -> CoursesResponse:
         grouped[course_code].append(course)
     return dict(grouped)
 
+
+def _convert_to_fts_query(q: str) -> str:
+    print(VALID_SUBJECTS)
+
+    """Convert a cleaned query into an FTS5 query string based on its format"""
+    # CASE 1: CRN (5 Digits)
+    if len(q) == 5 and q.isdigit():
+        return f"crn : {q}"
+
+    # CASE 2: Course Code (e.g. COMP 140 or COMP140)
+    elif re.match(r"^[A-Z]{4}\s*\d{3}$", q):
+        match = re.search(r"([A-Z]{4})\s*(\d{3})", q)
+        dpt, num = match.group(1), match.group(2)
+        return f'crs : "{dpt} {num}"'
+
+    # CASE 3: Subject/Dept Only (match against VALID_SUBJECTS)
+    elif len(q) == 4 and q.isalpha() and q in VALID_SUBJECTS:
+        return f"crs : {q}"
+
+    # CASE 4: Course Number Only (140)
+    elif len(q) == 3 and q.isdigit():
+        return f"crs : {q}"
+
+    # CASE 5: general fuzzy search
+    else:
+        # Replace hyphens with spaces to handle hyphenated names/terms
+        q_normalized = q.replace("-", " ")
+        words = q_normalized.split()
+        if not words:
+            return ""
+        # Standard multi-word prefix search across all columns
+        return " AND ".join([f"{w}*" for w in words])
+
 @app.get("/api/courses/", response_model=CoursesResponse)
 def search_courses(
-    q: str, 
-    term_code: str = DEFAULT_COURSE_TERM_CODE, 
+    q: str,
+    term_code: str = DEFAULT_COURSE_TERM_CODE,
     top_n_results: int = 50,
     offset: int = 0,
-    weight_recency: bool = False,
-    db: sql.Connection = Depends(get_db)
+    db: sql.Connection = Depends(get_db),
 ) -> CoursesResponse:
     try:
         q = _clean_query(q)
         fts_query = _convert_to_fts_query(q)
-
         if not fts_query:
             return {}
 
-        sql_query = "SELECT * FROM global_search WHERE global_search MATCH ?"
-        params = [fts_query]
+        # 1. Prepare base WHERE clause and parameters
+        where_clause = "WHERE global_search MATCH ?"
+        base_params = [fts_query]
 
         if term_code != "all":
-            sql_query += " AND term = ?"
-            params.append(f"courses_{term_code}")
+            where_clause += " AND term = ?"
+            base_params.append(f"courses_{term_code}")
 
-        # For exact course-code searches, prioritize newest term first.
-        if re.match(r'^[A-Z]{4}\s*\d{3}$', q):
-            sql_query += (
-                " ORDER BY CAST(REPLACE(term, 'courses_', '') AS INTEGER) DESC, "
-                "bm25(global_search) ASC LIMIT ? OFFSET ?"
-            )
+        # 2. Build the specific query based on the search type
+        if re.match(r"^[A-Z]{4}\s*\d{3}$", q):
+            # Exact course-code searches: prioritize newest term first.
+            sql_query = f"""
+                SELECT * FROM global_search 
+                {where_clause}
+                ORDER BY term DESC, 
+                         bm25(global_search) ASC 
+                LIMIT ? OFFSET ?
+            """
+            params = base_params + [top_n_results, offset]
+
+        elif q in VALID_SUBJECTS:
+            # Subject-only searches (e.g., "ELEC"):
+            num_start_idx = len(q) + 2
+
+            sql_query = f"""
+                WITH CourseMaxTerm AS (
+                    SELECT *,
+                           -- Find the newest term for THIS course
+                           MAX(CAST(REPLACE(term, 'courses_', '') AS INTEGER)) OVER (PARTITION BY crs) as course_max_term,
+                           -- Find the absolute newest term across ALL matched courses
+                           MAX(CAST(REPLACE(term, 'courses_', '') AS INTEGER)) OVER () as global_max_term
+                    FROM global_search
+                    {where_clause}
+                ),
+                RankedCourses AS (
+                    SELECT *,
+                           DENSE_RANK() OVER (
+                               ORDER BY 
+                                   -- Integer division creates rolling 2-year tiers, grouping recent Fall/Spring together
+                                   ((global_max_term - course_max_term) / 200) ASC, 
+                                   CAST(SUBSTR(crs, ?) AS INTEGER) ASC
+                           ) as course_rank
+                    FROM CourseMaxTerm
+                )
+                SELECT * FROM RankedCourses
+                WHERE course_rank > ? AND course_rank <= ?
+                ORDER BY course_rank ASC, term DESC
+            """
+            params = base_params + [num_start_idx, offset, offset + top_n_results]
+
         else:
-            # When searching all terms with weight_recency, prioritize recency first
-            # Otherwise, prioritize search relevance (BM25) first
-            if term_code == "all" and weight_recency:
-                sql_query += (
-                    " ORDER BY CAST(REPLACE(term, 'courses_', '') AS INTEGER) DESC, "
-                    "bm25(global_search) ASC LIMIT ? OFFSET ?"
-                )
-            else:
-                sql_query += (
-                    " ORDER BY bm25(global_search) ASC, "
-                    "CAST(REPLACE(term, 'courses_', '') AS INTEGER) DESC LIMIT ? OFFSET ?"
-                )
-        params.append(top_n_results)
-        params.append(offset)
-        
-        cur = db.cursor()
-        rows = cur.execute(sql_query, tuple(params)).fetchall()
+            # General searches: prioritize search relevance (BM25) first, then recency
+            sql_query = f"""
+                SELECT * FROM global_search 
+                {where_clause}
+                ORDER BY bm25(global_search) ASC, term DESC 
+                LIMIT ? OFFSET ?
+            """
+            params = base_params + [top_n_results, offset]
+
+        # 3. Execute and return
+        rows = db.cursor().execute(sql_query, tuple(params)).fetchall()
         return _group_courses(rows)
+
     except sql.Error as e:
         raise HTTPException(status_code=500, detail=f"Database query failed: {str(e)}")
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Unexpected server error: {str(e)}")
+        raise HTTPException(
+            status_code=500, detail=f"Unexpected server error: {str(e)}"
+        )
 
 @app.get("/api/terms", response_model=List[Term])
 def get_terms(db: sql.Connection = Depends(get_db)) -> List[Term]:
     """Get all available terms from the database."""
     try:
-        cur = db.cursor()
-        rows = cur.execute("SELECT code, term FROM terms ORDER BY code DESC").fetchall()
-        return [Term(code=row['code'], term=row['term']) for row in rows]
+        rows = (
+            db.cursor()
+            .execute("SELECT code, term FROM terms ORDER BY code DESC")
+            .fetchall()
+        )
+        return [Term(code=row["code"], term=row["term"]) for row in rows]
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to fetch terms: {str(e)}")
 
 
+# TODO: not a very useful feature, might remove user-facing part and keep as utility for subject list for search engine
 @app.get("/api/subjects", response_model=List[Subject])
 def get_subjects(db: sql.Connection = Depends(get_db)) -> List[Subject]:
     """Get all available subject codes with their full subject names."""
@@ -343,7 +376,9 @@ def get_subjects(db: sql.Connection = Depends(get_db)) -> List[Subject]:
         cur = db.cursor()
 
         # Find all tables that look like 'subjects_XXXXXX'
-        cur.execute("SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'subjects_%'")
+        cur.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'subjects_%'"
+        )
         subject_tables = [row[0] for row in cur.fetchall()]
 
         for table in subject_tables:
@@ -352,154 +387,172 @@ def get_subjects(db: sql.Connection = Depends(get_db)) -> List[Subject]:
                 code_upper = code.upper()
                 VALID_SUBJECTS.add(code_upper)
                 SUBJECT_NAMES[code_upper] = subject
-        
+
         subjects = [
             Subject(code=code, subject=SUBJECT_NAMES.get(code, code))
-                for code in sorted(VALID_SUBJECTS)
+            for code in sorted(VALID_SUBJECTS)
         ]
         return subjects
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to fetch subjects: {str(e)}")
+        raise HTTPException(
+            status_code=500, detail=f"Failed to fetch subjects: {str(e)}"
+        )
+
 
 @app.get("/api/syllabus", response_model=SyllabusResponse)
-async def get_syllabus(term_code: str, crn: str) -> SyllabusResponse:
+async def get_syllabus(
+    term_code: str,
+    crn: str,
+    x_client_id: Optional[str] = Header(default=None, alias="X-Client-Id"),
+) -> SyllabusResponse:
     """
     Check if syllabus exists for a course.
     If it does, query PDF endpoint to fetch it via authenticated session.
     """
-    global _stored_cookies, _stored_session
-
     try:
-        # Check if syllabus exists via faster metadata api first:  
+        client_id = _require_client_id(x_client_id)
+        l.info(
+            f"Received syllabus request for term {term_code} and CRN {crn} from client {client_id}"
+        )
+
+        # Check if syllabus exists via faster metadata api first (doesn't require auth):
         try:
-            metadata_url = f"{META_COURSES_URL}?action=SYLLABUS&term={term_code}&crn={crn}"
+            metadata_url = (
+                f"{METADATA_COURSES_URL}?action=SYLLABUS&term={term_code}&crn={crn}"
+            )
             metadata_response = r.get(metadata_url, timeout=15)
             metadata_response.raise_for_status()
-            
+
             metadata = ET.fromstring(metadata_response.text)
-            if metadata.attrib.get('has-syllabus') != 'yes':
+            if metadata.attrib.get("has-syllabus") != "yes":
                 return SyllabusResponse(syllabus_url=None, message="No syllabus posted")
         except Exception as e:
             print(f"[ERROR] Could not check syllabus metadata: {str(e)}")
             return SyllabusResponse(syllabus_url=None, message="No syllabus posted")
-        
+
         try:
-            # Authenticate if not already done (shared with evaluations)
-            session = await _ensure_authenticated_session()
-            
-            # Use the stored session which has Duo authentication cookies
-            print(f'Cookies: {_stored_cookies}')
-            print(f'Session cookies: {_stored_session.cookies.get_dict()}')
-            
-            # Fetch the PDF from authenticated endpoint
+            session = await _ensure_authenticated_session(client_id)
+
+            # Fetch pdf with playwright session.
             response = _fetch_syllabus_pdf_with_session(session, term_code, crn)
             response.raise_for_status()
-            _sync_stored_cookies_from_session()
-            
-            # Get the full PDF content for local file write
+
             pdf_content = response.content
-            
-            # Debug: Check content size and type
-            print(f"[DEBUG] Response size: {len(pdf_content)} bytes, content-type: {response.headers.get('content-type', 'unknown')}")
-            
-            # Check if response is actually a PDF.
+
+            l.info(
+                f"Response size: {len(pdf_content)} bytes, content-type: {response.headers.get('content-type', 'unknown')}"
+            )
+
+            # Check various failures before returning content.
             if not _is_pdf_response(pdf_content):
-                print(f"[DEBUG] Response doesn't look like a PDF. First 100 bytes: {pdf_content[:100]}")
+                l.info(
+                    f"Response doesn't look like a PDF. First 100 bytes: {pdf_content[:100]}"
+                )
                 # Some responses are direct-link/context failures, not true auth expiry.
                 if _looks_like_direct_link_block(pdf_content):
-                    print("[DEBUG] Syllabus direct-link block detected. Bootstrapping selfserve context...")
+                    l.info(
+                        "[DEBUG] Syllabus direct-link block detected. Bootstrapping selfserve context..."
+                    )
                     _bootstrap_selfserve_context(session)
                     response = _fetch_syllabus_pdf_with_session(session, term_code, crn)
                     response.raise_for_status()
                     pdf_content = response.content
-                    _sync_stored_cookies_from_session()
-                    print(f"[DEBUG] After context bootstrap - Response size: {len(pdf_content)} bytes")
+                    l.info(
+                        f"After context bootstrap - Response size: {len(pdf_content)} bytes"
+                    )
 
                 # Only re-authenticate when response appears to be login/auth-related.
-                if not _is_pdf_response(pdf_content) and _looks_like_auth_expired(pdf_content):
-                    print("[DEBUG] Auth expiry detected during syllabus fetch. Re-authenticating...")
-                    _clear_stored_auth()
-                    session = await _ensure_authenticated_session()
-                    _bootstrap_selfserve_context(session)
-                    response = _fetch_syllabus_pdf_with_session(session, term_code, crn)
-                    response.raise_for_status()
-                    pdf_content = response.content
-                    _sync_stored_cookies_from_session()
-                    print(f"[DEBUG] After re-auth - Response size: {len(pdf_content)} bytes")
+                if not _is_pdf_response(pdf_content)(
+                    pdf_content
+                ):
+                    print("[DEBUG] Auth expiry detected during syllabus fetch.")
+                    _clear_client_auth(client_id)
+                    raise HTTPException(
+                        status_code=401, detail="Authentication required"
+                    )
 
                 if not _is_pdf_response(pdf_content):
-                    raise HTTPException(status_code=502, detail="Failed to retrieve a valid syllabus PDF")
-            
+                    raise HTTPException(
+                        status_code=502,
+                        detail="Failed to retrieve a valid syllabus PDF",
+                    )
+
             # Return the PDF content directly
             return StreamingResponse(
                 iter([pdf_content]),
                 media_type="application/pdf",
-                headers={"Content-Disposition": f"inline; filename=syllabus_{term_code}_{crn}.pdf"}
+                headers={
+                    "Content-Disposition": f"inline; filename=syllabus_{term_code}_{crn}.pdf"
+                },
             )
+        except HTTPException:
+            raise
         except Exception as e:
             print(f"[ERROR] Error fetching syllabus PDF: {str(e)}")
-            raise HTTPException(status_code=502, detail=f"Failed to fetch syllabus PDF: {str(e)}")
+            raise HTTPException(
+                status_code=502, detail=f"Failed to fetch syllabus PDF: {str(e)}"
+            )
 
+    except HTTPException:
+        raise
     except Exception as e:
-        raise HTTPException(status_code=502, detail=f"Failed to check syllabus: {str(e)}")
+        raise HTTPException(
+            status_code=502, detail=f"Failed to check syllabus: {str(e)}"
+        )
+
 
 async def _authenticate_with_duo(netid: str, password: str):
     """
     Headless authentication: Server types credentials, user approves on phone.
     """
-    global _stored_session
-    
     async with async_playwright() as p:
-        print(f"[AUTH] Launching headless browser for user: {netid}...")
-        # MUST be True on Oracle Cloud
-        browser = await p.chromium.launch(headless=True) 
+        l.info(f"Launching headless browser for user: {netid}...")
+        browser = await p.chromium.launch(headless=True)
         context = await browser.new_context()
         page = await context.new_page()
 
         await page.goto("https://esther.rice.edu/")
 
-        # 1. Fill in the Rice CAS Login (Update selectors based on Rice's actual login page)
         try:
-            print("[AUTH] Entering credentials...")
-            # Example selectors - you will need to inspect the Rice login page to get the exact IDs
+            l.info("Entering credentials...")
             await page.fill("#username", netid)
             await page.fill("#password", password)
-            #await page.click("button[name='eventId_proceed']")
+            # await page.click("button[name='eventId_proceed']")
             await page.keyboard.press("Enter")
             # 2. The Duo Push Phase
             # At this point, Rice's system will automatically send a Duo push to the user's phone.
-            print("[AUTH] Credentials submitted. Waiting for user to approve Duo push on their phone...")
-            
+            l.info(
+                "Credentials submitted. Waiting for user to approve Duo push on their phone..."
+            )
+
             # We wait up to 60 seconds for them to tap "Approve" on their phone
             await page.wait_for_selector("text='Personal Information'", timeout=60000)
-            print("✅ Duo authentication successful!")
-            
+            l.info("Duo authentication successful!")
+
         except Exception as e:
             print("[AUTH] Failed! Taking screenshot of the browser state...")
-            await page.screenshot(path="debug_duo_error.png", full_page=True)   
+            await page.screenshot(path="debug_duo_error.png", full_page=True)
             await browser.close()
             raise Exception("Authentication failed. Did you approve the Duo push?")
 
         # Extract cookies
         cookies = await context.cookies()
-        cookie_dict = {cookie['name']: cookie['value'] for cookie in cookies}
+        cookie_dict = {cookie["name"]: cookie["value"] for cookie in cookies}
 
         await browser.close()
-    
+
     # Create session after auth and load cookies into it
-    _stored_session = Session()
+    session = Session()
     for name, value in cookie_dict.items():
-        _stored_session.cookies.set(name, value)
+        session.cookies.set(name, value)
 
     # Prime selfserve cookies
     try:
-        _bootstrap_selfserve_context(_stored_session)
+        _bootstrap_selfserve_context(session)
     except Exception as e:
         print(f"[WARN] Failed to warm selfserve session after Duo auth: {str(e)}")
 
-    _sync_stored_cookies_from_session()
-    
-    return _stored_cookies
+    return session
 
 
 def _get_valid_term_codes(session: Session) -> set:
@@ -507,16 +560,16 @@ def _get_valid_term_codes(session: Session) -> set:
     try:
         terms_url = "https://esther.rice.edu/selfserve/!swkscmp.ajax?p_data=TERMS"
         response = session.get(terms_url, timeout=15)
-        
+
         # Parse XML response
         root = ET.fromstring(response.text)
         term_codes = set()
-        
-        for term_elem in root.findall('.//TERM'):
-            code = term_elem.get('CODE')
+
+        for term_elem in root.findall(".//TERM"):
+            code = term_elem.get("CODE")
             if code:
                 term_codes.add(code)
-        
+
         return term_codes
     except Exception as e:
         print(f"[ERROR] Error fetching term codes: {str(e)}")
@@ -524,103 +577,245 @@ def _get_valid_term_codes(session: Session) -> set:
 
 
 def _extract_chart_data(img_src: str, response_count: int = None) -> Optional[Dict]:
-    """Extract chart data from ObjectPlanet chart servlet URL and convert percentages to counts."""
+    """Extract raw percentage chart data from ObjectPlanet chart servlet URL."""
     try:
         parsed_url = urlparse(img_src)
         params = parse_qs(parsed_url.query)
-        
+
         # Extract values and labels
-        values_str = params.get('sampleValues', [''])[0]
-        labels_str = params.get('sampleLabels', [''])[0]
-        title = unquote(params.get('chartTitle', [''])[0])
-        
+        values_str = params.get("sampleValues", [""])[0]
+        labels_str = params.get("sampleLabels", [""])[0]
+        title = unquote(params.get("chartTitle", [""])[0])
+
         if not values_str or not labels_str:
             return None
-        
-        # These are percentages from the URL
-        percentage_values = [int(x) for x in values_str.split(',') if x.isdigit()]
-        
-        # Convert percentages to actual counts if response_count is provided
-        if response_count and response_count > 0:
-            actual_values = [round(pct * response_count / 100) for pct in percentage_values]
-        else:
-            actual_values = percentage_values
-        
+
+        # These values are already percentages from the URL.
+        percentage_values = [int(x) for x in values_str.split(",") if x.isdigit()]
+
         # Labels are comma-separated with \n for line breaks
         labels = []
-        for label in labels_str.split(','):
+        for label in labels_str.split(","):
             # Decode URL encoding and replace \n with space
-            decoded = unquote(label).replace('\n', ' ').strip()
+            decoded = unquote(label).replace("\n", " ").strip()
             if decoded:
                 labels.append(decoded)
-        
-        if not actual_values or not labels:
+
+        if not percentage_values or not labels:
             return None
-        
+
         return {
             "title": title,
-            "values": actual_values,
+            "values": percentage_values,
             "labels": labels,
-            "total": response_count if response_count else sum(actual_values)
+            "total": response_count if response_count else sum(percentage_values),
         }
     except Exception as e:
         print(f"[ERROR] Error extracting chart data: {str(e)}")
         return None
 
 
+def _extract_charts_from_results(results_container) -> List[Dict]:
+    charts_data = []
+    if not results_container:
+        return charts_data
+
+    chart_divs = results_container.find_all("div", class_="chart")
+    for chart_div in chart_divs:
+        filler = chart_div.find("div", class_="filler")
+        response_count = None
+
+        if filler:
+            filler_text = filler.get_text()
+            responses_match = re.search(r"Responses:\s*(\d+)", filler_text)
+            if responses_match:
+                response_count = int(responses_match.group(1))
+
+        img = chart_div.find("img")
+        if img:
+            src = img.get("src", "")
+            if "ChartServlet" in src:
+                chart_data = _extract_chart_data(src, response_count)
+                if chart_data:
+                    charts_data.append(chart_data)
+
+    return charts_data
+
+
+def _find_eval_header(container):
+    for prev in container.previous_elements:
+        if not hasattr(prev, "get_text"):
+            continue
+        if getattr(prev, "name", None) not in {"table", "div"}:
+            continue
+        text = prev.get_text(" ", strip=True)
+        if "Course(s):" in text and "Term:" in text:
+            return prev
+    return None
+
+
+def _extract_label_value(text: str, label: str) -> Optional[str]:
+    pattern = rf"{re.escape(label)}\s*(.+?)(?=\s+(?:Term:|Course\(s\):|Enrolled:|Instructor\(s\):)|$)"
+    match = re.search(pattern, text, re.IGNORECASE)
+    return match.group(1).strip() if match else None
+
+
+def _parse_eval_header_text(text: str) -> Dict[str, Optional[str]]:
+    term = _extract_label_value(text, "Term:")
+    course = _extract_label_value(text, "Course(s):")
+    enrolled = _extract_label_value(text, "Enrolled:")
+    instructors = _extract_label_value(text, "Instructor(s):")
+
+    crn = None
+    course_code = None
+    section = None
+
+    if course:
+        crn_match = re.search(r"\((\d{4,6})\)", course)
+        if crn_match:
+            crn = crn_match.group(1)
+
+        code_match = re.search(r"\b([A-Z]{2,5})\s*(\d{3})\s*(\d{3})?\b", course)
+        if code_match:
+            course_code = f"{code_match.group(1)} {code_match.group(2)}"
+            if code_match.group(3):
+                section = code_match.group(3)
+
+    return {
+        "term_label": term,
+        "course": course,
+        "enrolled": enrolled,
+        "instructors": instructors,
+        "crn": crn,
+        "course_code": course_code,
+        "section": section,
+    }
+
+
+def _normalize_instructor_name(name: str) -> str:
+    return re.sub(r"\s+", " ", name.strip()).lower()
+
+
+def _split_instructor_names(raw: str) -> List[str]:
+    if not raw:
+        return []
+    if "|" in raw:
+        parts = raw.split("|")
+    elif ";" in raw:
+        parts = raw.split(";")
+    else:
+        parts = [raw]
+    return [part.strip() for part in parts if part.strip()]
+
+
+def _resolve_instructor_ids_by_name(
+    term_code: str, names: List[str], db: sql.Connection
+) -> Dict[str, str]:
+    if not names:
+        return {}
+
+    table = f"instructors_{term_code}"
+    cur = db.cursor()
+    exists = cur.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name = ?",
+        (table,),
+    ).fetchone()
+    if not exists:
+        return {}
+
+    normalized = [_normalize_instructor_name(name) for name in names]
+    placeholders = ",".join(["?"] * len(normalized))
+    rows = cur.execute(
+        f"SELECT name, id FROM {table} WHERE lower(name) IN ({placeholders})",
+        tuple(normalized),
+    ).fetchall()
+
+    mapping = {}
+    for row in rows:
+        mapping[_normalize_instructor_name(row["name"])] = row["id"]
+
+    return mapping
+
+
+def _lookup_instructor_name(
+    term_code: str, instructor_id: str, db: sql.Connection
+) -> Optional[str]:
+    table = f"instructors_{term_code}"
+    cur = db.cursor()
+    exists = cur.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name = ?",
+        (table,),
+    ).fetchone()
+    if not exists:
+        return None
+
+    row = cur.execute(
+        f"SELECT name FROM {table} WHERE id = ?",
+        (instructor_id,),
+    ).fetchone()
+    return row["name"] if row else None
+
+
 @app.get("/api/evaluate")
-async def get_evaluation(term: str, crn: str, subject: str):
+async def get_evaluation(
+    term: str,
+    crn: str,
+    subject: str,
+    x_client_id: Optional[str] = Header(default=None, alias="X-Client-Id"),
+):
     """
     Get course evaluation data. First call triggers Duo auth.
     Subsequent calls reuse stored session.
-    
+
     Returns HTML of the results-container div.
     """
-    global _stored_cookies, _stored_session
-
     try:
-        # Authenticate if not already done
-        session = await _ensure_authenticated_session()
+        client_id = _require_client_id(x_client_id)
+
+        session = await _ensure_authenticated_session(client_id)
 
         # Check if term is valid
         valid_terms = _get_valid_term_codes(session)
+        if not valid_terms:
+            raise HTTPException(status_code=401, detail="Authentication required")
         if term not in valid_terms:
             return {
                 "success": False,
                 "message": "No evaluation data found",
                 "term": term,
                 "crn": crn,
-                "subject": subject.upper()
+                "subject": subject.upper(),
             }
 
         # Use the stored session (which maintains cookies)
-        _sync_stored_cookies_from_session()
-
         url = "https://esther.rice.edu/selfserve/swkscmt.main"
-        headers = {
+        headers = {  # TODO: may not need all these
             "Content-Type": "application/x-www-form-urlencoded",
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
         }
 
         # First, GET the page to extract the as_fid token
         get_response = session.get(url, timeout=15)
-        soup = BeautifulSoup(get_response.text, 'html.parser')
-        
+        soup = BeautifulSoup(get_response.text, "html.parser")
+
         # Extract as_fid from form or page
         as_fid = None
-        form = soup.find('form')
+        form = soup.find("form")
         if form:
-            as_fid_input = form.find('input', {'name': 'as_fid'})
+            as_fid_input = form.find("input", {"name": "as_fid"})
             if as_fid_input:
-                as_fid = as_fid_input.get('value', '')
-        
+                as_fid = as_fid_input.get("value", "")
+
         if not as_fid:
             # Try to extract from page source
             import re as regex_module
-            match = regex_module.search(r'as_fid["\']?\s*[:=]\s*["\']?([a-f0-9]{40})', get_response.text)
+
+            match = regex_module.search(
+                r'as_fid["\']?\s*[:=]\s*["\']?([a-f0-9]{40})', get_response.text
+            )
             if match:
                 as_fid = match.group(1)
-        
+
         print(f"[DEBUG] as_fid: {as_fid}")
 
         payload = {
@@ -628,95 +823,227 @@ async def get_evaluation(term: str, crn: str, subject: str):
             "p_confirm": "1",
             "p_term": term,
             "p_type": "Course",
-            "p_crn": crn
+            "p_crn": crn,
         }
-        
+
         if as_fid:
             payload["as_fid"] = as_fid
 
         print(f"[DEBUG] Posting payload: {payload}")
-        response = session.post(url, headers=headers, data=payload, timeout=15)
+        response = session.post(url, data=payload, timeout=15)
         print(f"[DEBUG] Response status: {response.status_code}")
         print(f"[DEBUG] Response length: {len(response.text)}")
         print(f"[DEBUG] Response preview: {response.text[:500]}")
 
         # Check if session is valid
-        if "bmenu.P_MainMnu" not in response.text and "Personal Information" not in response.text:
-            print("[DEBUG] Session appears invalid, re-authenticating...")
-            # Session expired, clear and re-authenticate
-            _clear_stored_auth()
-            session = await _ensure_authenticated_session()
-            
-            # Get new as_fid
-            get_response = session.get(url, timeout=15)
-            soup = BeautifulSoup(get_response.text, 'html.parser')
-            form = soup.find('form')
-            if form:
-                as_fid_input = form.find('input', {'name': 'as_fid'})
-                if as_fid_input:
-                    payload["as_fid"] = as_fid_input.get('value', '')
-            
-            response = session.post(url, headers=headers, data=payload, timeout=15)
-            _sync_stored_cookies_from_session()
+        if "Course and Instructor Evaluation Display" not in response.text:
+            print("[DEBUG] Session appears invalid.")
+            _clear_client_auth(client_id)
+            raise HTTPException(status_code=401, detail="Authentication required")
 
         # Parse and extract results-container div
-        soup = BeautifulSoup(response.text, 'html.parser')
-        results_container = soup.find('div', class_='results-container')
-        
-        print(f"[DEBUG] Found results-container: {results_container is not None}")
-        if not results_container:
-            # Try alternative class names
-            print(f"[DEBUG] Searching for alternative containers...")
-            for div in soup.find_all('div'):
-                classes = div.get('class', [])
-                if 'result' in str(classes).lower() or 'eval' in str(classes).lower():
-                    print(f"[DEBUG] Found potential container with classes: {classes}")
+        soup = BeautifulSoup(response.text, "html.parser")
+        results_container = soup.find("div", class_="results-container")
 
         if results_container:
-            # Extract chart data from image URLs with their response counts
-            charts_data = []
-            
-            # Find all chart divs
-            chart_divs = results_container.find_all('div', class_='chart')
-            
-            for chart_div in chart_divs:
-                # Extract response count from the filler div
-                filler = chart_div.find('div', class_='filler')
-                response_count = None
-                
-                if filler:
-                    # Find the div containing "Responses: XX"
-                    filler_text = filler.get_text()
-                    responses_match = re.search(r'Responses:\s*(\d+)', filler_text)
-                    if responses_match:
-                        response_count = int(responses_match.group(1))
-                
-                # Find the image with chart servlet URL
-                img = chart_div.find('img')
-                if img:
-                    src = img.get('src', '')
-                    if 'ChartServlet' in src:
-                        chart_data = _extract_chart_data(src, response_count)
-                        if chart_data:
-                            charts_data.append(chart_data)
-            
+            charts_data = _extract_charts_from_results(results_container)
             return {
                 "success": True,
                 "html": str(results_container),
                 "charts": charts_data,
                 "term": term,
                 "crn": crn,
-                "subject": subject.upper()
+                "subject": subject.upper(),
             }
-        else:
+        else:  # TODO: may be redundant with the term check above
             return {
                 "success": False,
                 "message": "No evaluation data found",
                 "term": term,
                 "crn": crn,
-                "subject": subject.upper()
+                "subject": subject.upper(),
             }
 
+    except HTTPException:
+        raise
     except Exception as e:
         print(f"Error in evaluation endpoint: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Failed to fetch evaluation: {str(e)}")
+        raise HTTPException(
+            status_code=500, detail=f"Failed to fetch evaluation: {str(e)}"
+        )
+
+
+@app.get("/api/instructor-evaluate")
+async def get_instructor_evaluation(
+    term: str,
+    crn: Optional[str] = None,
+    instructor_id: Optional[str] = None,
+    instructor_ids: Optional[str] = None,
+    instructor_name: Optional[str] = None,
+    instructor_names: Optional[str] = None,
+    db: sql.Connection = Depends(get_db),
+    x_client_id: Optional[str] = Header(default=None, alias="X-Client-Id"),
+):
+    """
+    Fetch instructor evaluations for a term and (optionally) filter by course CRN.
+    Supports instructor IDs directly or instructor names resolved via the DB.
+    """
+    try:
+        client_id = _require_client_id(x_client_id)
+
+        session = await _ensure_authenticated_session(client_id)
+
+        valid_terms = _get_valid_term_codes(session)
+        if not valid_terms:
+            raise HTTPException(status_code=401, detail="Authentication required")
+        if term not in valid_terms:
+            return {
+                "success": False,
+                "message": "No evaluation data found",
+                "term": term,
+                "crn": crn,
+            }
+
+        requested_ids = []
+        requested_names = []
+
+        if instructor_id:
+            requested_ids.append(instructor_id.strip())
+        if instructor_ids:
+            requested_ids.extend(
+                [value.strip() for value in instructor_ids.split(",") if value.strip()]
+            )
+        if instructor_name:
+            requested_names.append(instructor_name.strip())
+        if instructor_names:
+            requested_names.extend(_split_instructor_names(instructor_names))
+
+        resolved_name_map = _resolve_instructor_ids_by_name(term, requested_names, db)
+        missing_names = [
+            name
+            for name in requested_names
+            if _normalize_instructor_name(name) not in resolved_name_map
+        ]
+        for name in requested_names:
+            normalized = _normalize_instructor_name(name)
+            if normalized in resolved_name_map:
+                requested_ids.append(resolved_name_map[normalized])
+
+        # Deduplicate while preserving order
+        seen = set()
+        unique_ids = []
+        for instr_id in requested_ids:
+            if instr_id not in seen:
+                seen.add(instr_id)
+                unique_ids.append(instr_id)
+
+        if not unique_ids:
+            if requested_names:
+                return {
+                    "success": False,
+                    "message": "No matching instructors found",
+                    "term": term,
+                    "crn": crn,
+                    "results": [],
+                    "missing_instructors": missing_names or requested_names,
+                }
+            raise HTTPException(
+                status_code=400,
+                detail="Missing instructor_id(s) or instructor_name(s).",
+            )
+
+        url = "https://esther.rice.edu/selfserve/swkscmt.main"
+        headers = {
+            "Content-Type": "application/x-www-form-urlencoded",
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+        }
+
+        results = []
+
+        for instr_id in unique_ids:
+            get_response = session.get(url, timeout=15)
+            soup = BeautifulSoup(get_response.text, "html.parser")
+
+            as_fid = None
+            form = soup.find("form")
+            if form:
+                as_fid_input = form.find("input", {"name": "as_fid"})
+                if as_fid_input:
+                    as_fid = as_fid_input.get("value", "")
+
+            if not as_fid:
+                match = re.search(
+                    r'as_fid["\']?\s*[:=]\s*["\']?([a-f0-9]{40})',
+                    get_response.text,
+                )
+                if match:
+                    as_fid = match.group(1)
+
+            payload = {
+                "p_commentid": "",
+                "p_confirm": "1",
+                "p_term": term,
+                "p_type": "Instructor",
+                "p_instr": instr_id,
+            }
+            if as_fid:
+                payload["as_fid"] = as_fid
+
+            response = session.post(url, headers=headers, data=payload, timeout=15)
+
+            if (
+                "bmenu.P_MainMnu" not in response.text
+                and "Personal Information" not in response.text
+            ):
+                _clear_client_auth(client_id)
+                raise HTTPException(status_code=401, detail="Authentication required")
+
+            page = BeautifulSoup(response.text, "html.parser")
+            sections = []
+            for container in page.find_all("div", class_="results-container"):
+                header = _find_eval_header(container)
+                header_text = header.get_text(" ", strip=True) if header else ""
+                meta = _parse_eval_header_text(header_text)
+                charts = _extract_charts_from_results(container)
+                section = {
+                    **meta,
+                    "html": str(container),
+                    "charts": charts,
+                }
+                sections.append(section)
+
+            if crn:
+                sections = [
+                    section for section in sections if section.get("crn") == crn
+                ]
+
+            instructor_label = _lookup_instructor_name(term, instr_id, db)
+            results.append(
+                {
+                    "instructor_id": instr_id,
+                    "instructor_name": instructor_label,
+                    "sections": sections,
+                    "success": bool(sections),
+                    "message": (
+                        "No evaluation data found"
+                        if not sections
+                        else "Evaluation data found"
+                    ),
+                }
+            )
+
+        return {
+            "success": any(result.get("success") for result in results),
+            "term": term,
+            "crn": crn,
+            "results": results,
+            "missing_instructors": missing_names,
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error in instructor evaluation endpoint: {str(e)}")
+        raise HTTPException(
+            status_code=500, detail=f"Failed to fetch instructor evaluation: {str(e)}"
+        )
