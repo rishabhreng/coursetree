@@ -5,6 +5,7 @@ import { Analytics } from '@vercel/analytics/react';
 import { SpeedInsights } from '@vercel/speed-insights/react';
 
 const DEFAULT_TERM_CODE = '202710'
+const PAGE_SIZE = 10
 const API_BASE_URL = import.meta.env.VITE_API_URL
   || (typeof process !== 'undefined' ? process.env.REACT_APP_API_URL : undefined)
   || (import.meta.env.DEV ? 'http://localhost:8000' : 'https://api-ricecourses.duckdns.org')
@@ -179,7 +180,7 @@ function App() {
     setError(null)
 
     try {
-      const searchParams = new URLSearchParams({ q: query.trim(), offset: '0', top_n_results: '50' })
+      const searchParams = new URLSearchParams({ q: query.trim(), offset: '0', top_n_results: String(PAGE_SIZE) })
       if (termCode.trim()) {
         searchParams.set('term_code', termCode.trim())
       }
@@ -193,9 +194,9 @@ function App() {
       setExpandedCourses(new Set())
       setSyllabusLookup({})
 
-      const totalCourses = Object.values(normalized).flat().length
-      setHasMore(totalCourses === 50)
-      setCurrentOffset(50)
+      const uniqueCourses = Object.keys(normalized).length
+      setHasMore(uniqueCourses === PAGE_SIZE)
+      setCurrentOffset(uniqueCourses)
       setLastQuery(query.trim())
       setLastTermCode(termCode.trim())
     } catch (err) {
@@ -212,7 +213,7 @@ function App() {
     setError(null)
 
     try {
-      const searchParams = new URLSearchParams({ q: lastQuery, offset: currentOffset.toString(), top_n_results: '50' })
+      const searchParams = new URLSearchParams({ q: lastQuery, offset: currentOffset.toString(), top_n_results: String(PAGE_SIZE) })
       if (lastTermCode) {
         searchParams.set('term_code', lastTermCode)
       }
@@ -234,9 +235,9 @@ function App() {
 
       setResults(mergedResults)
 
-      const totalNewCourses = Object.values(newResults).flat().length
-      setHasMore(totalNewCourses === 50)
-      setCurrentOffset(currentOffset + 50)
+      const uniqueNewCourses = Object.keys(newResults).length
+      setHasMore(uniqueNewCourses === PAGE_SIZE)
+      setCurrentOffset((prev) => prev + uniqueNewCourses)
     } catch (err) {
       setError(err.message ?? 'Unable to fetch more')
     } finally {
