@@ -136,7 +136,7 @@ def get_all_courses_for_term(term_code: str, sql_db_path=None) -> DataFrame:
         except:
             prerequisites = ""
         credits = course.find("credit-hours").text
-        course_page = f"{COURSE_CONSTRUCTOR_URL}&crn={crn}&term={term_code}" # xml link redirects to homepage
+        course_page = f"{COURSE_CONSTRUCTOR_URL}&p_crn={crn}&p_term={term_code}" # xml link redirects to homepage
 
         df.append(
             {

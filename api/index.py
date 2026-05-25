@@ -147,6 +147,7 @@ async def auth_status(
     client_id = _require_client_id(x_client_id)
     return {"authenticated": client_id in AUTH_SESSIONS}
 
+
 def _is_pdf_response(content: bytes) -> bool:
     return content.startswith(b"%PDF")
 
@@ -168,14 +169,8 @@ def _fetch_syllabus_pdf_with_session(session: Session, term_code: str, crn: str)
         "type": "SYLLABUS",
         "crn": crn,
     }
-    headers = {
-        "Referer": "https://esther.rice.edu/selfserve/swkscmt.main",
-        "Accept": "application/pdf,application/octet-stream;q=0.9,*/*;q=0.8",
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",  # TODO: strip down to bare minimum requirements
-    }
-    return session.get(
-        SYLLABUS_BASE_URL, params=params, headers=headers, timeout=15, stream=True
-    )
+
+    return session.get(SYLLABUS_BASE_URL, params=params, timeout=15, stream=True)
 
 
 # TODO: remove eventually
@@ -199,7 +194,9 @@ def get_db():
 
 def _clean_query(q: str) -> str:
     """Utility function to clean and standardize the search query"""
-    q = q.strip().upper()
+    q = q.strip().upper()  # Normalize whitespace
+    q = re.sub(r"\.", "", q) 
+    q = re.sub(r",", "", q) 
     # Expand common acronyms
     for (
         acronym,
@@ -238,8 +235,6 @@ def _group_courses(rows: List[sql.Row]) -> CoursesResponse:
 
 
 def _convert_to_fts_query(q: str) -> str:
-    print(VALID_SUBJECTS)
-
     """Convert a cleaned query into an FTS5 query string based on its format"""
     # CASE 1: CRN (5 Digits)
     if len(q) == 5 and q.isdigit():
@@ -268,6 +263,11 @@ def _convert_to_fts_query(q: str) -> str:
             return ""
         # Standard multi-word prefix search across all columns
         return " AND ".join([f"{w}*" for w in words])
+    
+import re
+from fastapi import Depends, HTTPException
+import sqlite3 as sql
+# Assuming other necessary imports/constants are present
 
 @app.get("/api/courses/", response_model=CoursesResponse)
 def search_courses(
@@ -291,59 +291,61 @@ def search_courses(
             where_clause += " AND term = ?"
             base_params.append(f"courses_{term_code}")
 
-        # 2. Build the specific query based on the search type
+        # 2. Determine secondary sort and specific CTE parameters
         if re.match(r"^[A-Z]{4}\s*\d{3}$", q):
-            # Exact course-code searches: prioritize newest term first.
-            sql_query = f"""
-                SELECT * FROM global_search 
-                {where_clause}
-                ORDER BY term DESC, 
-                         bm25(global_search) ASC 
-                LIMIT ? OFFSET ?
-            """
-            params = base_params + [top_n_results, offset]
-
+            # Exact searches: use the unified best_search_rank so ranks aren't split
+            secondary_sort = "best_search_rank ASC"
+            cte_params = []
+            
         elif q in VALID_SUBJECTS:
-            # Subject-only searches (e.g., "ELEC"):
-            num_start_idx = len(q) + 2
-
-            sql_query = f"""
-                WITH CourseMaxTerm AS (
-                    SELECT *,
-                           -- Find the newest term for THIS course
-                           MAX(CAST(REPLACE(term, 'courses_', '') AS INTEGER)) OVER (PARTITION BY crs) as course_max_term,
-                           -- Find the absolute newest term across ALL matched courses
-                           MAX(CAST(REPLACE(term, 'courses_', '') AS INTEGER)) OVER () as global_max_term
-                    FROM global_search
-                    {where_clause}
-                ),
-                RankedCourses AS (
-                    SELECT *,
-                           DENSE_RANK() OVER (
-                               ORDER BY 
-                                   -- Integer division creates rolling 2-year tiers, grouping recent Fall/Spring together
-                                   ((global_max_term - course_max_term) / 200) ASC, 
-                                   CAST(SUBSTR(crs, ?) AS INTEGER) ASC
-                           ) as course_rank
-                    FROM CourseMaxTerm
-                )
-                SELECT * FROM RankedCourses
-                WHERE course_rank > ? AND course_rank <= ?
-                ORDER BY course_rank ASC, term DESC
-            """
-            params = base_params + [num_start_idx, offset, offset + top_n_results]
-
+            # Subject-only searches: recency tier -> true numerical order
+            secondary_sort = "CAST(SUBSTR(crs, ?) AS INTEGER) ASC"
+            cte_params = [len(q) + 2]
+            
         else:
-            # General searches: prioritize search relevance (BM25) first, then recency
-            sql_query = f"""
-                SELECT * FROM global_search 
-                {where_clause}
-                ORDER BY bm25(global_search) ASC, term DESC 
-                LIMIT ? OFFSET ?
-            """
-            params = base_params + [top_n_results, offset]
+            # General keyword searches: use unified best_search_rank
+            secondary_sort = "best_search_rank ASC"
+            cte_params = []
 
-        # 3. Execute and return
+        # 3. Build the universal CTE query 
+        sql_query = f"""
+            WITH RawFTS AS (
+                SELECT *, 
+                       bm25(global_search) as search_rank 
+                FROM global_search
+                {where_clause}
+            ),
+            CourseStats AS (
+                SELECT *,
+                       -- Find the newest term for THIS course
+                       MAX(CAST(REPLACE(term, 'courses_', '') AS INTEGER)) OVER (PARTITION BY crs) as course_max_term,
+                       -- Find the absolute newest term across ALL matched courses
+                       MAX(CAST(REPLACE(term, 'courses_', '') AS INTEGER)) OVER () as global_max_term,
+                       -- NEW: Find the best search relevance for the entire course to prevent splitting ranks
+                       MIN(search_rank) OVER (PARTITION BY crs) as best_search_rank
+                FROM RawFTS
+            ),
+            RankedCourses AS (
+                SELECT *,
+                       DENSE_RANK() OVER (
+                           ORDER BY 
+                               -- Primary Sort: Rolling 2-year tiers
+                               ((global_max_term - course_max_term) / 200) ASC, 
+                               -- Secondary Sort: Injected based on search type
+                               {secondary_sort}
+                       ) as course_rank
+                FROM CourseStats
+            )
+            -- 4. Select and paginate based on the unique course rank
+            SELECT * FROM RankedCourses
+            WHERE course_rank > ? AND course_rank <= ?
+            ORDER BY course_rank ASC, term DESC
+        """
+
+        # Parameter binding order strictly follows the '?' placeholders in the query
+        params = base_params + cte_params + [offset, offset + top_n_results]
+
+        # 5. Execute and return
         rows = db.cursor().execute(sql_query, tuple(params)).fetchall()
         return _group_courses(rows)
 
@@ -368,7 +370,6 @@ def get_terms(db: sql.Connection = Depends(get_db)) -> List[Term]:
         raise HTTPException(status_code=500, detail=f"Failed to fetch terms: {str(e)}")
 
 
-# TODO: not a very useful feature, might remove user-facing part and keep as utility for subject list for search engine
 @app.get("/api/subjects", response_model=List[Subject])
 def get_subjects(db: sql.Connection = Depends(get_db)) -> List[Subject]:
     """Get all available subject codes with their full subject names."""
@@ -462,9 +463,7 @@ async def get_syllabus(
                     )
 
                 # Only re-authenticate when response appears to be login/auth-related.
-                if not _is_pdf_response(pdf_content)(
-                    pdf_content
-                ):
+                if not _is_pdf_response(pdf_content):
                     print("[DEBUG] Auth expiry detected during syllabus fetch.")
                     _clear_client_auth(client_id)
                     raise HTTPException(
@@ -701,11 +700,10 @@ def _split_instructor_names(raw: str) -> List[str]:
         return []
     if "|" in raw:
         parts = raw.split("|")
-    elif ";" in raw:
-        parts = raw.split(";")
     else:
         parts = [raw]
-    return [part.strip() for part in parts if part.strip()]
+    # eliminate middle initial for matching
+    return [re.sub(r"\b [A-Z]\.", " ", name).strip() for name in parts]
 
 
 def _resolve_instructor_ids_by_name(
@@ -789,10 +787,6 @@ async def get_evaluation(
 
         # Use the stored session (which maintains cookies)
         url = "https://esther.rice.edu/selfserve/swkscmt.main"
-        headers = {  # TODO: may not need all these
-            "Content-Type": "application/x-www-form-urlencoded",
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-        }
 
         # First, GET the page to extract the as_fid token
         get_response = session.get(url, timeout=15)
@@ -845,24 +839,15 @@ async def get_evaluation(
         soup = BeautifulSoup(response.text, "html.parser")
         results_container = soup.find("div", class_="results-container")
 
-        if results_container:
-            charts_data = _extract_charts_from_results(results_container)
-            return {
-                "success": True,
-                "html": str(results_container),
-                "charts": charts_data,
-                "term": term,
-                "crn": crn,
-                "subject": subject.upper(),
-            }
-        else:  # TODO: may be redundant with the term check above
-            return {
-                "success": False,
-                "message": "No evaluation data found",
-                "term": term,
-                "crn": crn,
-                "subject": subject.upper(),
-            }
+        charts_data = _extract_charts_from_results(results_container)
+        return {
+            "success": True,
+            "html": str(results_container),
+            "charts": charts_data,
+            "term": term,
+            "crn": crn,
+            "subject": subject.upper(),
+        }
 
     except HTTPException:
         raise
@@ -877,9 +862,6 @@ async def get_evaluation(
 async def get_instructor_evaluation(
     term: str,
     crn: Optional[str] = None,
-    instructor_id: Optional[str] = None,
-    instructor_ids: Optional[str] = None,
-    instructor_name: Optional[str] = None,
     instructor_names: Optional[str] = None,
     db: sql.Connection = Depends(get_db),
     x_client_id: Optional[str] = Header(default=None, alias="X-Client-Id"),
@@ -907,17 +889,8 @@ async def get_instructor_evaluation(
         requested_ids = []
         requested_names = []
 
-        if instructor_id:
-            requested_ids.append(instructor_id.strip())
-        if instructor_ids:
-            requested_ids.extend(
-                [value.strip() for value in instructor_ids.split(",") if value.strip()]
-            )
-        if instructor_name:
-            requested_names.append(instructor_name.strip())
         if instructor_names:
             requested_names.extend(_split_instructor_names(instructor_names))
-
         resolved_name_map = _resolve_instructor_ids_by_name(term, requested_names, db)
         missing_names = [
             name
@@ -951,12 +924,7 @@ async def get_instructor_evaluation(
                 status_code=400,
                 detail="Missing instructor_id(s) or instructor_name(s).",
             )
-
         url = "https://esther.rice.edu/selfserve/swkscmt.main"
-        headers = {
-            "Content-Type": "application/x-www-form-urlencoded",
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-        }
 
         results = []
 
@@ -989,7 +957,7 @@ async def get_instructor_evaluation(
             if as_fid:
                 payload["as_fid"] = as_fid
 
-            response = session.post(url, headers=headers, data=payload, timeout=15)
+            response = session.post(url, data=payload, timeout=15)
 
             if (
                 "bmenu.P_MainMnu" not in response.text

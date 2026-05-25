@@ -50,6 +50,7 @@ function App() {
   const [currentOffset, setCurrentOffset] = useState(0)
   const [lastQuery, setLastQuery] = useState('')
   const [lastTermCode, setLastTermCode] = useState('')
+  const [previousSearch, setPreviousSearch] = useState(null)
   const [activeSyllabusKey, setActiveSyllabusKey] = useState(null)
   const [estherAuthState, setEstherAuthState] = useState('checking')
   const [showAuthModal, setShowAuthModal] = useState(false)
@@ -251,6 +252,25 @@ function App() {
 
   const handleSubjectClick = (subjectCode) => {
     setQuery(subjectCode)
+  }
+
+  const handleInstructorClick = (instructor) => {
+    const trimmed = String(instructor || '').trim()
+    if (!trimmed || trimmed.toUpperCase() === 'TBA') return
+
+    const priorQuery = query.trim()
+    if (priorQuery || termCode) {
+      setPreviousSearch({ query: priorQuery, termCode })
+    }
+
+    setQuery(trimmed)
+  }
+
+  const handleRestorePreviousSearch = () => {
+    if (!previousSearch) return
+    setQuery(previousSearch.query || '')
+    setTermCode(previousSearch.termCode || 'all')
+    setPreviousSearch(null)
   }
 
   const handleQueryChange = (e) => {
@@ -693,6 +713,17 @@ function App() {
 
       <div className="container">
         <section className="search-section">
+          {previousSearch && (
+            <div className="previous-search-row">
+              <button
+                type="button"
+                className="previous-search-btn"
+                onClick={handleRestorePreviousSearch}
+              >
+                Back to previous search
+              </button>
+            </div>
+          )}
           <div className="search-inputs">
             <div className="input-group">
               <div className="label-with-tooltip">
@@ -824,8 +855,12 @@ function App() {
                   <div className="course-instances">
                     {displayInstances.map((course) => {
                       const syllabusState = syllabusLookup[getSyllabusKey(course)]
+                      const evaluationState = evaluationLookup[getEvaluationKey(course)]
                       const instructorEvalState = instructorEvalLookup[getInstructorEvalKey(course)]
                       const coursePageUrl = course.course_page || `https://courses.rice.edu/courses/courses/!SWKSCAT.cat?p_action=COURSE&p_term=${course.term}&p_crn=${course.crn}`
+                      const authRequired = [syllabusState, evaluationState, instructorEvalState].some(
+                        (state) => state?.status === 'none' && state?.message === ESTHER_AUTH_REQUIRED_MESSAGE
+                      )
 
                       return (
                         <div
@@ -843,9 +878,29 @@ function App() {
                               <div className="detail-row">
                                 <strong>Instructors:</strong>
                                 <div className="detail-items">
-                                  {formatInstructors(course.instructors).map((instructor, idx) => (
-                                    <div key={idx} className="detail-item">{instructor}</div>
-                                  ))}
+                                  {formatInstructors(course.instructors).map((instructor, idx) => {
+                                    const trimmedInstructor = String(instructor).trim()
+                                    const isTba = trimmedInstructor.toUpperCase() === 'TBA'
+
+                                    return (
+                                      <div key={idx} className="detail-item">
+                                        {isTba ? (
+                                          <span className="instructor-text muted">{instructor}</span>
+                                        ) : (
+                                          <a
+                                            href="#"
+                                            className="instructor-link"
+                                            onClick={(e) => {
+                                              e.preventDefault()
+                                              handleInstructorClick(instructor)
+                                            }}
+                                          >
+                                            {instructor}
+                                          </a>
+                                        )}
+                                      </div>
+                                    )
+                                  })}
                                 </div>
                               </div>
                             )}
@@ -882,9 +937,9 @@ function App() {
                               type="button"
                               className="evaluation-btn"
                               onClick={() => fetchEvaluation(course)}
-                              disabled={evaluationLookup[getEvaluationKey(course)]?.status === 'loading'}
+                              disabled={evaluationState?.status === 'loading'}
                             >
-                              {evaluationLookup[getEvaluationKey(course)]?.status === 'loading' ? 'Loading...' : 'Get Evaluation'}
+                              {evaluationState?.status === 'loading' ? 'Loading...' : 'Get Evaluation'}
                             </button>
                             <button
                               type="button"
@@ -895,6 +950,10 @@ function App() {
                               {instructorEvalState?.status === 'loading' ? 'Loading...' : 'Show Instructor Evals'}
                             </button>
                           </div>
+
+                          {authRequired && (
+                            <p className="evaluation-status neutral">{ESTHER_AUTH_REQUIRED_MESSAGE}</p>
+                          )}
 
                           {syllabusState?.status === 'available' && syllabusState.url && (
                             <>
@@ -918,7 +977,7 @@ function App() {
                             </>
                           )}
 
-                          {syllabusState?.status === 'none' && (
+                          {syllabusState?.status === 'none' && syllabusState.message !== ESTHER_AUTH_REQUIRED_MESSAGE && (
                             <p className="syllabus-status neutral">{syllabusState.message}</p>
                           )}
 
@@ -926,7 +985,7 @@ function App() {
                             <p className="syllabus-status error">{syllabusState.message}</p>
                           )}
 
-                          {evaluationLookup[getEvaluationKey(course)]?.status === 'available' && (
+                          {evaluationState?.status === 'available' && (
                             <>
                               <button
                                 type="button"
@@ -937,11 +996,11 @@ function App() {
                               </button>
                               {!collapsedEvals.has(getEvaluationKey(course)) && (
                                 <div className="evaluation-results">
-                                  {renderCharts(evaluationLookup[getEvaluationKey(course)]?.charts)}
+                                  {renderCharts(evaluationState?.charts)}
                                   <div className="comments-section">
                                     <div
                                       dangerouslySetInnerHTML={{
-                                        __html: formatEvalHtml(evaluationLookup[getEvaluationKey(course)]?.html),
+                                        __html: formatEvalHtml(evaluationState?.html),
                                       }}
                                     />
                                   </div>
@@ -987,14 +1046,6 @@ function App() {
                                             )}
                                             {result.sections?.map((section, idx) => (
                                               <div key={`${instructorKey}-${idx}`} className="instructor-eval-section">
-                                                <div className="instructor-eval-header">
-                                                  <div className="eval-course">{section.course || section.course_code || 'Course evaluation'}</div>
-                                                  <div className="eval-meta">
-                                                    {section.term_label && <span>{section.term_label}</span>}
-                                                    {section.crn && <span>CRN: {section.crn}</span>}
-                                                    {section.enrolled && <span>Enrolled: {section.enrolled}</span>}
-                                                  </div>
-                                                </div>
                                                 {renderCharts(section.charts)}
                                                 <div className="comments-section">
                                                   <div
@@ -1015,7 +1066,7 @@ function App() {
                             </>
                           )}
 
-                          {instructorEvalState?.status === 'none' && (
+                          {instructorEvalState?.status === 'none' && instructorEvalState?.message !== ESTHER_AUTH_REQUIRED_MESSAGE && (
                             <p className="evaluation-status neutral">{instructorEvalState?.message}</p>
                           )}
 
@@ -1023,12 +1074,12 @@ function App() {
                             <p className="evaluation-status error">{instructorEvalState?.message}</p>
                           )}
 
-                          {evaluationLookup[getEvaluationKey(course)]?.status === 'none' && (
-                            <p className="evaluation-status neutral">{evaluationLookup[getEvaluationKey(course)]?.message}</p>
+                          {evaluationState?.status === 'none' && evaluationState?.message !== ESTHER_AUTH_REQUIRED_MESSAGE && (
+                            <p className="evaluation-status neutral">{evaluationState?.message}</p>
                           )}
 
-                          {evaluationLookup[getEvaluationKey(course)]?.status === 'error' && (
-                            <p className="evaluation-status error">{evaluationLookup[getEvaluationKey(course)]?.message}</p>
+                          {evaluationState?.status === 'error' && (
+                            <p className="evaluation-status error">{evaluationState?.message}</p>
                           )}
                         </div>
                       )

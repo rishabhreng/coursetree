@@ -732,6 +732,32 @@ body {
   text-align: left;
 }
 
+.instructor-link {
+  color: #9dd6ff;
+  text-decoration: underline;
+  /* text-decoration-thickness: 1px; */
+  text-underline-offset: 2px;
+  font-weight: 600;
+  transition: color 0.2s ease, text-decoration-color 0.2s ease;
+  cursor: pointer;
+}
+
+.instructor-link:hover {
+  color: #ffffff;
+  text-decoration-color: rgba(255, 255, 255, 0.75);
+}
+
+.instructor-link:focus-visible {
+  outline: 2px solid rgba(157, 214, 255, 0.7);
+  outline-offset: 2px;
+  border-radius: 2px;
+}
+
+.instructor-text.muted {
+  color: var(--text-tertiary);
+  font-weight: 500;
+}
+
 .card-actions {
   display: flex;
   align-items: center;
