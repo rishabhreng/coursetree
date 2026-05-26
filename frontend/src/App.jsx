@@ -707,9 +707,6 @@ function App() {
             </span>
           </div>
         </div>
-        {/* <div className="esther-auth-disclaimer">
-          Credentials are not saved by this site. They are sent directly to ESTHER for Duo-backed authentication, and this login is only required for syllabi and evaluations viewing.
-        </div> */}
       </div>
 
       <div className="container">
@@ -1114,7 +1111,7 @@ function App() {
           <div className="modal-content auth-modal-content">
             <h2 className="auth-modal-title">ESTHER Login</h2>
             <div className="auth-modal-disclaimer">
-              Credentials are not saved by this site. They are sent directly to ESTHER for Duo-backed authentication, and this login is only required for syllabi and evaluations viewing.
+              Credentials are not saved by this site. They are sent directly to ESTHER for Duo push-notification authentication. This is only required for viewing syllabi and evaluations.
             </div>
             <p className="auth-modal-copy">
               Sign in with your Rice NetID to open an ESTHER session for this browser.
