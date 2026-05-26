@@ -12,7 +12,7 @@ import sqlite3 as sql
 import requests as r
 from requests import Session
 from bs4 import BeautifulSoup
-from playwright.async_api import async_playwright
+from playwright.async_api import async_playwright, TimeoutError
 
 from pydantic import BaseModel
 from pathlib import Path
@@ -132,6 +132,9 @@ async def login(
         _store_client_session(client_id, session)
 
         return {"success": True, "message": "Successfully authenticated with ESTHER"}
+    except HTTPException as e:
+        l.error(f"[AUTH ERROR] {str(e)}")
+        raise
     except Exception as e:
         l.error(f"[AUTH ERROR] {str(e)}")
         raise HTTPException(
@@ -518,6 +521,26 @@ async def _authenticate_with_duo(netid: str, password: str):
             await page.fill("#password", password)
             # await page.click("button[name='eventId_proceed']")
             await page.keyboard.press("Enter")
+
+            # Check if credentials are wrong before waiting on Duo.
+            error_messages = [
+                "The NetID you entered cannot be identified",
+                "The password you entered was incorrect",
+            ]
+            try:
+                await page.wait_for_function(
+                    """(errors) => {
+                        const text = document.body ? document.body.innerText : "";
+                        return errors.some((msg) => text.includes(msg));
+                    }""",
+                    arg=error_messages,
+                    timeout=4000,
+                )
+                l.error("Invalid credentials provided.")
+                raise Exception("Invalid credentials")
+            except TimeoutError:
+                pass
+
             # 2. The Duo Push Phase
             # At this point, Rice's system will automatically send a Duo push to the user's phone.
             l.info(
@@ -525,14 +548,32 @@ async def _authenticate_with_duo(netid: str, password: str):
             )
 
             # We wait up to 60 seconds for them to tap "Approve" on their phone
-            await page.wait_for_selector("text='Personal Information'", timeout=60000)
+            try:
+                await page.wait_for_selector("text='Personal Information'", timeout=60000)
+            except TimeoutError:
+                # Re-check for invalid credentials in case the error rendered late.
+                content = await page.content()
+                if any(msg in content for msg in error_messages):
+                    l.error("Invalid credentials provided.")
+                    raise Exception("Invalid credentials")
+                raise Exception("Duo push timed out")
             l.info("Duo authentication successful!")
 
         except Exception as e:
             print("[AUTH] Failed! Taking screenshot of the browser state...")
             await page.screenshot(path="debug_duo_error.png", full_page=True)
             await browser.close()
-            raise Exception("Authentication failed. Did you approve the Duo push?")
+            if str(e) == "Invalid credentials":
+                raise HTTPException(status_code=401, detail="Invalid NetID or password")
+            if str(e) == "Duo push timed out":
+                raise HTTPException(
+                    status_code=408,
+                    detail="Duo push timed out. Please approve the request and try again.",
+                )
+            raise HTTPException(
+                status_code=401,
+                detail="Authentication failed. Did you approve the Duo push?",
+            )
 
         # Extract cookies
         cookies = await context.cookies()
@@ -871,20 +912,20 @@ async def get_instructor_evaluation(
     Supports instructor IDs directly or instructor names resolved via the DB.
     """
     try:
-        client_id = _require_client_id(x_client_id)
+        # client_id = _require_client_id(x_client_id)
 
-        session = await _ensure_authenticated_session(client_id)
+        # session = await _ensure_authenticated_session(client_id)
 
-        valid_terms = _get_valid_term_codes(session)
-        if not valid_terms:
-            raise HTTPException(status_code=401, detail="Authentication required")
-        if term not in valid_terms:
-            return {
-                "success": False,
-                "message": "No evaluation data found",
-                "term": term,
-                "crn": crn,
-            }
+        # valid_terms = _get_valid_term_codes(session)
+        # if not valid_terms:
+        #     raise HTTPException(status_code=401, detail="Authentication required")
+        # if term not in valid_terms:
+        #     return {
+        #         "success": False,
+        #         "message": "No evaluation data found",
+        #         "term": term,
+        #         "crn": crn,
+        #     }
 
         requested_ids = []
         requested_names = []
@@ -909,6 +950,8 @@ async def get_instructor_evaluation(
             if instr_id not in seen:
                 seen.add(instr_id)
                 unique_ids.append(instr_id)
+
+        print(f"[DEBUG] Resolved instructor IDs: {requested_ids}, missing names: {requested_names}")
 
         if not unique_ids:
             if requested_names:
