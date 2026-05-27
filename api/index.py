@@ -266,11 +266,14 @@ def _convert_to_fts_query(q: str) -> str:
             return ""
         # Standard multi-word prefix search across all columns
         return " AND ".join([f"{w}*" for w in words])
-    
+
+
 import re
 from fastapi import Depends, HTTPException
 import sqlite3 as sql
+
 # Assuming other necessary imports/constants are present
+
 
 @app.get("/api/courses/", response_model=CoursesResponse)
 def search_courses(
@@ -317,10 +320,14 @@ def search_courses(
                     where_clause += " AND CAST(REPLACE(term, 'courses_', '') AS INTEGER) BETWEEN ? AND ?"
                     base_params.extend([start_int, end_int])
                 elif start_int:
-                    where_clause += " AND CAST(REPLACE(term, 'courses_', '') AS INTEGER) >= ?"
+                    where_clause += (
+                        " AND CAST(REPLACE(term, 'courses_', '') AS INTEGER) >= ?"
+                    )
                     base_params.append(start_int)
                 elif end_int:
-                    where_clause += " AND CAST(REPLACE(term, 'courses_', '') AS INTEGER) <= ?"
+                    where_clause += (
+                        " AND CAST(REPLACE(term, 'courses_', '') AS INTEGER) <= ?"
+                    )
                     base_params.append(end_int)
 
         # 2. Determine secondary sort and specific CTE parameters
@@ -328,18 +335,18 @@ def search_courses(
             # Exact searches: use the unified best_search_rank so ranks aren't split
             secondary_sort = "best_search_rank ASC"
             cte_params = []
-            
+
         elif q in VALID_SUBJECTS:
             # Subject-only searches: recency tier -> true numerical order
             secondary_sort = "CAST(SUBSTR(crs, ?) AS INTEGER) ASC"
             cte_params = [len(q) + 2]
-            
+
         else:
             # General keyword searches: use unified best_search_rank
             secondary_sort = "best_search_rank ASC"
             cte_params = []
 
-        # 3. Build the universal CTE query 
+        # 3. Build the universal CTE query
         sql_query = f"""
             WITH RawFTS AS (
                 SELECT *, 
@@ -387,6 +394,7 @@ def search_courses(
         raise HTTPException(
             status_code=500, detail=f"Unexpected server error: {str(e)}"
         )
+
 
 @app.get("/api/terms", response_model=List[Term])
 def get_terms(db: sql.Connection = Depends(get_db)) -> List[Term]:
@@ -578,7 +586,9 @@ async def _authenticate_with_duo(netid: str, password: str):
 
             # We wait up to 60 seconds for them to tap "Approve" on their phone
             try:
-                await page.wait_for_selector("text='Personal Information'", timeout=60000)
+                await page.wait_for_selector(
+                    "text='Personal Information'", timeout=60000
+                )
             except TimeoutError:
                 # Re-check for invalid credentials in case the error rendered late.
                 content = await page.content()
@@ -980,7 +990,9 @@ async def get_instructor_evaluation(
                 seen.add(instr_id)
                 unique_ids.append(instr_id)
 
-        print(f"[DEBUG] Resolved instructor IDs: {requested_ids}, missing names: {requested_names}")
+        print(
+            f"[DEBUG] Resolved instructor IDs: {requested_ids}, missing names: {requested_names}"
+        )
 
         if not unique_ids:
             if requested_names:
