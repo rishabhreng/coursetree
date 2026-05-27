@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, Cell } from 'recharts'
 import './App.css'
 import { Analytics } from '@vercel/analytics/react';
@@ -33,7 +33,8 @@ const getOrCreateClientId = () => {
 function App() {
   const [clientId] = useState(() => getOrCreateClientId())
   const [query, setQuery] = useState('')
-  const [termCode, setTermCode] = useState('all')
+  const [termStart, setTermStart] = useState('all')
+  const [termEnd, setTermEnd] = useState('all')
   const [terms, setTerms] = useState([])
   const [subjects, setSubjects] = useState([])
   const [results, setResults] = useState({})
@@ -50,7 +51,8 @@ function App() {
   const [hasMore, setHasMore] = useState(false)
   const [currentOffset, setCurrentOffset] = useState(0)
   const [lastQuery, setLastQuery] = useState('')
-  const [lastTermCode, setLastTermCode] = useState('')
+  const [lastTermStart, setLastTermStart] = useState('all')
+  const [lastTermEnd, setLastTermEnd] = useState('all')
   const [previousSearch, setPreviousSearch] = useState(null)
   const [activeSyllabusKey, setActiveSyllabusKey] = useState(null)
   const [estherAuthState, setEstherAuthState] = useState('checking')
@@ -144,12 +146,62 @@ function App() {
     fetchSubjects()
   }, [])
 
+  const termOptions = useMemo(() => {
+    const list = Array.isArray(terms) ? [...terms] : []
+    if (!list.some((term) => term.code === DEFAULT_TERM_CODE)) {
+      list.push({ code: DEFAULT_TERM_CODE, term: 'Current Term' })
+    }
+    return list
+      .filter((term) => term?.code)
+      .sort((a, b) => Number(b.code) - Number(a.code))
+  }, [terms])
+
   const getTermLabel = (code) => {
-    const foundTerm = terms.find((term) => term.code === code)
+    const foundTerm = termOptions.find((term) => term.code === code)
     if (foundTerm) return foundTerm.term
     if (code === DEFAULT_TERM_CODE) return 'Current Term'
     return code
   }
+  const latestTermCode = termOptions.length
+    ? termOptions[0].code
+    : DEFAULT_TERM_CODE
+  const startIndex = termOptions.findIndex((term) => term.code === termStart)
+  const endOptions = startIndex >= 0 ? termOptions.slice(0, startIndex + 1) : termOptions
+  const showTermEnd = termStart !== 'all' && termStart !== latestTermCode
+
+  useEffect(() => {
+    if (!termOptions.length) return
+
+    if (termStart !== 'all' && startIndex === -1) {
+      setTermStart('all')
+      setTermEnd('all')
+      return
+    }
+
+    if (termStart === 'all') {
+      if (termEnd !== 'all') {
+        setTermEnd('all')
+      }
+      return
+    }
+
+    if (termStart === latestTermCode) {
+      if (termEnd !== termStart) {
+        setTermEnd(termStart)
+      }
+      return
+    }
+
+    if (termEnd === 'all') {
+      setTermEnd(latestTermCode)
+      return
+    }
+
+    const endIndex = termOptions.findIndex((term) => term.code === termEnd)
+    if (endIndex !== -1 && startIndex !== -1 && endIndex > startIndex) {
+      setTermEnd(termStart)
+    }
+  }, [termOptions, termStart, termEnd, latestTermCode, startIndex])
 
   const normalizeResults = (payload) => {
     if (Array.isArray(payload)) {
@@ -180,9 +232,17 @@ function App() {
     setError(null)
 
     try {
-      const searchParams = new URLSearchParams({ q: query.trim(), offset: '0', top_n_results: String(PAGE_SIZE) })
-      if (termCode.trim()) {
-        searchParams.set('term_code', termCode.trim())
+      const searchParams = new URLSearchParams({
+        q: query.trim(),
+        offset: '0',
+        top_n_results: String(PAGE_SIZE),
+        term_code: 'all',
+      })
+      if (termStart && termStart !== 'all') {
+        searchParams.set('term_start', termStart)
+      }
+      if (termEnd && termEnd !== 'all') {
+        searchParams.set('term_end', termEnd)
       }
 
       const res = await apiFetch(`/api/courses/?${searchParams.toString()}`)
@@ -198,7 +258,8 @@ function App() {
       setHasMore(uniqueCourses === PAGE_SIZE)
       setCurrentOffset(uniqueCourses)
       setLastQuery(query.trim())
-      setLastTermCode(termCode.trim())
+      setLastTermStart(termStart)
+      setLastTermEnd(termEnd)
     } catch (err) {
       setError(err.message ?? 'Unable to fetch')
     } finally {
@@ -213,9 +274,17 @@ function App() {
     setError(null)
 
     try {
-      const searchParams = new URLSearchParams({ q: lastQuery, offset: currentOffset.toString(), top_n_results: String(PAGE_SIZE) })
-      if (lastTermCode) {
-        searchParams.set('term_code', lastTermCode)
+      const searchParams = new URLSearchParams({
+        q: lastQuery,
+        offset: currentOffset.toString(),
+        top_n_results: String(PAGE_SIZE),
+        term_code: 'all',
+      })
+      if (lastTermStart && lastTermStart !== 'all') {
+        searchParams.set('term_start', lastTermStart)
+      }
+      if (lastTermEnd && lastTermEnd !== 'all') {
+        searchParams.set('term_end', lastTermEnd)
       }
 
       const res = await apiFetch(`/api/courses/?${searchParams.toString()}`)
@@ -260,8 +329,8 @@ function App() {
     if (!trimmed || trimmed.toUpperCase() === 'TBA') return
 
     const priorQuery = query.trim()
-    if (priorQuery || termCode) {
-      setPreviousSearch({ query: priorQuery, termCode })
+    if (priorQuery || termStart !== 'all' || termEnd !== 'all') {
+      setPreviousSearch({ query: priorQuery, termStart, termEnd })
     }
 
     setQuery(trimmed)
@@ -270,7 +339,8 @@ function App() {
   const handleRestorePreviousSearch = () => {
     if (!previousSearch) return
     setQuery(previousSearch.query || '')
-    setTermCode(previousSearch.termCode || 'all')
+    setTermStart(previousSearch.termStart || 'all')
+    setTermEnd(previousSearch.termEnd || 'all')
     setPreviousSearch(null)
   }
 
@@ -285,7 +355,7 @@ function App() {
     }, 250)
 
     return () => clearTimeout(timerId)
-  }, [query, termCode])
+  }, [query, termStart, termEnd])
 
   useEffect(() => {
     syllabusLookupRef.current = syllabusLookup
@@ -777,22 +847,40 @@ function App() {
             </div>
 
             <div className="input-group">
-              <label htmlFor="term">Term</label>
-              <select
-                id="term"
-                value={termCode}
-                onChange={(e) => setTermCode(e.target.value)}
-              >
-                <option value="all">All Terms</option>
-                {terms.map((term) => (
-                  <option key={term.code} value={term.code}>
-                    {term.term}
-                  </option>
-                ))}
-                {!terms.some((term) => term.code === DEFAULT_TERM_CODE) && (
-                  <option value={DEFAULT_TERM_CODE}>Current Term</option>
+              <label>Term Range</label>
+              <div className={`term-range ${showTermEnd ? '' : 'term-range-single'}`}>
+                <div className="term-range-field">
+                  <span className="term-range-label">From</span>
+                  <select
+                    id="term-start"
+                    value={termStart}
+                    onChange={(e) => setTermStart(e.target.value)}
+                  >
+                    <option value="all">All terms</option>
+                    {termOptions.map((term) => (
+                      <option key={term.code} value={term.code}>
+                        {term.term}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                {showTermEnd && (
+                  <div className="term-range-field">
+                    <span className="term-range-label">To</span>
+                    <select
+                      id="term-end"
+                      value={termEnd}
+                      onChange={(e) => setTermEnd(e.target.value)}
+                    >
+                      {endOptions.map((term) => (
+                        <option key={term.code} value={term.code}>
+                          {term.term}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
                 )}
-              </select>
+              </div>
             </div>
           </div>
 

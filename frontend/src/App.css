@@ -348,6 +348,30 @@ body {
   gap: 8px;
 }
 
+.term-range {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+}
+
+.term-range.term-range-single {
+  grid-template-columns: 1fr;
+}
+
+.term-range-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.term-range-label {
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: var(--text-tertiary);
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+}
+
 .input-group label {
   font-size: 0.9rem;
   font-weight: 600;
@@ -1254,6 +1278,10 @@ body {
   .search-inputs {
     grid-template-columns: 1fr;
     gap: 12px;
+  }
+
+  .term-range {
+    grid-template-columns: 1fr;
   }
 
   .search-btn {

@@ -276,6 +276,8 @@ import sqlite3 as sql
 def search_courses(
     q: str,
     term_code: str = DEFAULT_COURSE_TERM_CODE,
+    term_start: Optional[str] = None,
+    term_end: Optional[str] = None,
     top_n_results: int = 50,
     offset: int = 0,
     db: sql.Connection = Depends(get_db),
@@ -290,9 +292,36 @@ def search_courses(
         where_clause = "WHERE global_search MATCH ?"
         base_params = [fts_query]
 
-        if term_code != "all":
+        if term_code and term_code != "all":
             where_clause += " AND term = ?"
             base_params.append(f"courses_{term_code}")
+        else:
+            start_code = term_start.strip() if term_start else None
+            end_code = term_end.strip() if term_end else None
+            if start_code == "all":
+                start_code = None
+            if end_code == "all":
+                end_code = None
+
+            if start_code or end_code:
+                try:
+                    start_int = int(start_code) if start_code else None
+                    end_int = int(end_code) if end_code else None
+                except ValueError:
+                    raise HTTPException(status_code=400, detail="Invalid term range")
+
+                if start_int and end_int and start_int > end_int:
+                    start_int, end_int = end_int, start_int
+
+                if start_int and end_int:
+                    where_clause += " AND CAST(REPLACE(term, 'courses_', '') AS INTEGER) BETWEEN ? AND ?"
+                    base_params.extend([start_int, end_int])
+                elif start_int:
+                    where_clause += " AND CAST(REPLACE(term, 'courses_', '') AS INTEGER) >= ?"
+                    base_params.append(start_int)
+                elif end_int:
+                    where_clause += " AND CAST(REPLACE(term, 'courses_', '') AS INTEGER) <= ?"
+                    base_params.append(end_int)
 
         # 2. Determine secondary sort and specific CTE parameters
         if re.match(r"^[A-Z]{4}\s*\d{3}$", q):
