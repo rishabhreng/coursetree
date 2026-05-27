@@ -169,6 +169,16 @@ function App() {
   const endOptions = startIndex >= 0 ? termOptions.slice(0, startIndex + 1) : termOptions
   const showTermEnd = termStart !== 'all' && termStart !== latestTermCode
 
+  const handleTermStartSelect = (event) => {
+    const nextValue = event.target.value
+    const wasAll = termStart === 'all'
+
+    setTermStart(nextValue)
+    if (wasAll && nextValue !== 'all') {
+      setTermEnd(nextValue)
+    }
+  }
+
   useEffect(() => {
     if (!termOptions.length) return
 
@@ -854,7 +864,7 @@ function App() {
                   <select
                     id="term-start"
                     value={termStart}
-                    onChange={(e) => setTermStart(e.target.value)}
+                    onChange={handleTermStartSelect}
                   >
                     <option value="all">All terms</option>
                     {termOptions.map((term) => (
