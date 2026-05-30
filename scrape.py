@@ -123,7 +123,7 @@ def get_all_courses_for_term(term_code: str, sql_db_path=None) -> DataFrame:
                 meeting_days[0] = f"{_start_time[0]}-{_end_time[0]} {meeting_days[0]}"
             else:
                 for i in range(len(meeting_days)):
-                    meeting_days[i] = f"{meeting_days[i]} {_start_time[i]}-{_end_time[i]}"
+                    meeting_days[i] = f"{_start_time[i]}-{_end_time[i]} {meeting_days[i]}"
         except:
             meeting_days = []
         try:
