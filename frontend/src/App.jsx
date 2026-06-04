@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, Cell } from 'recharts'
 import './App.css'
 import { Analytics } from '@vercel/analytics/react';
@@ -7,7 +7,6 @@ import { SpeedInsights } from '@vercel/speed-insights/react';
 const DEFAULT_TERM_CODE = '202710'
 const PAGE_SIZE = 10
 const API_BASE_URL = import.meta.env.VITE_API_URL
-  || (typeof process !== 'undefined' ? process.env.REACT_APP_API_URL : undefined)
   || (import.meta.env.DEV ? 'http://localhost:8000' : 'https://api-ricecourses.duckdns.org')
 const ESTHER_AUTH_REQUIRED_MESSAGE = 'ESTHER login required. Use the Login to ESTHER button.'
 const ESTHER_CLIENT_ID_KEY = 'coursetree-esther-client-id'
@@ -63,14 +62,14 @@ function App() {
   const [authError, setAuthError] = useState(null)
   const syllabusLookupRef = useRef({})
 
-  const apiFetch = (path, options = {}) => {
+  const apiFetch = useCallback((path, options = {}) => {
     const headers = new Headers(options.headers || {})
     headers.set('X-Client-Id', clientId)
     return fetch(`${API_BASE_URL}${path}`, {
       ...options,
       headers,
     })
-  }
+  }, [clientId])
 
   useEffect(() => {
     const fetchAuthStatus = async () => {
@@ -89,7 +88,7 @@ function App() {
     }
 
     fetchAuthStatus()
-  }, [clientId])
+  }, [apiFetch])
 
   const handleAuthSubmit = async (e) => {
     e.preventDefault();
@@ -144,7 +143,7 @@ function App() {
 
     fetchTerms()
     fetchSubjects()
-  }, [])
+  }, [apiFetch])
 
   const termOptions = useMemo(() => {
     const list = Array.isArray(terms) ? [...terms] : []
@@ -230,7 +229,7 @@ function App() {
     return {}
   }
 
-  const doSearch = async () => {
+  const doSearch = useCallback(async () => {
     if (!query.trim()) {
       setResults({})
       setHasMore(false)
@@ -275,7 +274,7 @@ function App() {
     } finally {
       setLoading(false)
     }
-  }
+  }, [apiFetch, query, termStart, termEnd])
 
   const loadMore = async () => {
     if (!lastQuery) return
@@ -365,7 +364,7 @@ function App() {
     }, 250)
 
     return () => clearTimeout(timerId)
-  }, [query, termStart, termEnd])
+  }, [doSearch])
 
   useEffect(() => {
     syllabusLookupRef.current = syllabusLookup
@@ -431,7 +430,9 @@ function App() {
           const times = parsed.map((time) => String(time).trim()).filter(Boolean)
           return times.length > 0 ? times : ['TBA']
         }
-      } catch { }
+      } catch (error) {
+        void error
+      }
     }
     const timesList = timesStr.split(/,|;\s*/).map(s => s.trim()).filter(s => s.length > 0)
     return timesList.length > 0 ? timesList : ['TBA']
@@ -447,7 +448,9 @@ function App() {
           const names = parsed.map((name) => String(name).trim()).filter(Boolean)
           return names.length > 0 ? names : ['TBA']
         }
-      } catch { }
+      } catch (error) {
+        void error
+      }
     }
     const instructors = instructorStr.split(/,|;\s*/).map(s => s.trim()).filter(s => s.length > 0)
     return instructors.length > 0 ? instructors : ['TBA']
