@@ -60,6 +60,7 @@ function App() {
   const [password, setPassword] = useState('')
   const [authLoading, setAuthLoading] = useState(false)
   const [authError, setAuthError] = useState(null)
+  const searchInputRef = useRef(null)
   const syllabusLookupRef = useRef({})
 
   const apiFetch = useCallback((path, options = {}) => {
@@ -89,6 +90,20 @@ function App() {
 
     fetchAuthStatus()
   }, [apiFetch])
+
+  useEffect(() => {
+    const handleShortcut = (event) => {
+      const isSearchShortcut = (event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'k'
+      if (!isSearchShortcut) return
+
+      event.preventDefault()
+      searchInputRef.current?.focus()
+      searchInputRef.current?.select?.()
+    }
+
+    window.addEventListener('keydown', handleShortcut)
+    return () => window.removeEventListener('keydown', handleShortcut)
+  }, [])
 
   const handleAuthSubmit = async (e) => {
     e.preventDefault();
@@ -852,6 +867,7 @@ function App() {
               </div>
               <input
                 id="query"
+                ref={searchInputRef}
                 value={query}
                 onChange={handleQueryChange}
                 onKeyDown={onEnter}
