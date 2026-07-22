@@ -48,6 +48,11 @@ ACRONYM_MAP = {
 }
 
 
+def _escape_fts_prefix_token(token: str) -> str:
+    token = token.replace('"', '""')
+    return f'"{token}"*'
+
+
 def clean_query(q: str) -> str:
     """Utility function to clean and standardize the search query"""
     q = q.strip().upper()  # Normalize whitespace
@@ -118,4 +123,4 @@ def convert_to_fts_query(q: str) -> str:
         if not words:
             return ""
         # Standard multi-word prefix search across all columns
-        return " AND ".join([f"{w}*" for w in words])
+        return " AND ".join([_escape_fts_prefix_token(w) for w in words])

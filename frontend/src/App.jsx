@@ -1038,7 +1038,7 @@ function App() {
                               rel="noreferrer"
                               className="course-page-link"
                             >
-                              Course Page
+                              Details
                             </a>
                             <button
                               type="button"
@@ -1046,7 +1046,7 @@ function App() {
                               onClick={() => fetchSyllabus(course)}
                               disabled={syllabusState?.status === 'loading'}
                             >
-                              {syllabusState?.status === 'loading' ? 'Checking...' : 'Get syllabus'}
+                              {syllabusState?.status === 'loading' ? 'Checking...' : 'View syllabus'}
                             </button>
                             <button
                               type="button"
@@ -1054,7 +1054,7 @@ function App() {
                               onClick={() => fetchEvaluation(course)}
                               disabled={evaluationState?.status === 'loading'}
                             >
-                              {evaluationState?.status === 'loading' ? 'Loading...' : 'Get Evaluation'}
+                              {evaluationState?.status === 'loading' ? 'Loading...' : 'Course Evals'}
                             </button>
                             <button
                               type="button"
@@ -1062,7 +1062,7 @@ function App() {
                               onClick={() => fetchInstructorEvaluations(course)}
                               disabled={instructorEvalState?.status === 'loading'}
                             >
-                              {instructorEvalState?.status === 'loading' ? 'Loading...' : 'Show Instructor Evals'}
+                              {instructorEvalState?.status === 'loading' ? 'Loading...' : 'Instructor Evals'}
                             </button>
                           </div>
 
