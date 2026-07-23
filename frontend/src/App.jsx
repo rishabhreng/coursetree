@@ -871,7 +871,7 @@ function App() {
                 value={query}
                 onChange={handleQueryChange}
                 onKeyDown={onEnter}
-                placeholder="Search courses"
+                placeholder="Search courses (Ctrl+K)"
               />
             </div>
 
