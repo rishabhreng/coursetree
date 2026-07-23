@@ -177,7 +177,8 @@ def parse_eval_header_text(text: str) -> Dict[str, Optional[str]]:
 
 
 def normalize_instructor_name(name: str) -> str:
-    return re.sub(r"\s+", " ", name.strip()).lower()
+    cleaned = name.strip().replace(".", "") # account for edge case in middle initial
+    return re.sub(r"\s+", " ", cleaned).lower()
 
 
 def split_instructor_names(raw: str) -> List[str]:
@@ -187,8 +188,7 @@ def split_instructor_names(raw: str) -> List[str]:
         parts = raw.split("|")
     else:
         parts = [raw]
-    # eliminate middle initial for matching
-    return [re.sub(r"\b [A-Z]\.", " ", name).strip() for name in parts]
+    return [name.strip() for name in parts]
 
 
 def resolve_instructor_ids_by_name(

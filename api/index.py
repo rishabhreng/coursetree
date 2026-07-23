@@ -77,10 +77,13 @@ async def login(
         store_client_session(client_id, session)
 
         return {"success": True, "message": "Successfully authenticated with ESTHER"}
+    except HTTPException:
+        raise
     except Exception as e:
+        print(f"[AUTH] Unexpected login error: {str(e)}")
         raise HTTPException(
-            status_code=401,
-            detail="Authentication failed. Did you approve the Duo push?",
+            status_code=500,
+            detail="Authentication failed due to a server error.",
         )
 
 
