@@ -177,8 +177,25 @@ def parse_eval_header_text(text: str) -> Dict[str, Optional[str]]:
 
 
 def normalize_instructor_name(name: str) -> str:
-    cleaned = name.strip().replace(".", "") # account for edge case in middle initial
-    return re.sub(r"\s+", " ", cleaned).lower()
+    cleaned = re.sub(r"\s+", " ", name.strip().replace(".", ""))
+    if not cleaned:
+        return ""
+
+    if "," in cleaned:
+        last_name, given_names = cleaned.split(",", 1)
+        last_name = last_name.strip()
+        given_tokens = [token for token in given_names.split() if len(token) > 1]
+        given_name = given_tokens[0] if given_tokens else ""
+    else:
+        tokens = cleaned.split()
+        if len(tokens) == 1:
+            return tokens[0].lower()
+        last_name = tokens[-1].strip()
+        given_tokens = [token for token in tokens[:-1] if len(token) > 1]
+        given_name = given_tokens[0] if given_tokens else tokens[0]
+
+    canonical = f"{last_name} {given_name}".strip()
+    return re.sub(r"\s+", " ", canonical).lower()
 
 
 def split_instructor_names(raw: str) -> List[str]:
@@ -206,16 +223,14 @@ def resolve_instructor_ids_by_name(
     if not exists:
         return {}
 
-    normalized = [normalize_instructor_name(name) for name in names]
-    placeholders = ",".join(["?"] * len(normalized))
-    rows = cur.execute(
-        f"SELECT name, id FROM {table} WHERE lower(name) IN ({placeholders})",
-        tuple(normalized),
-    ).fetchall()
+    normalized = {normalize_instructor_name(name) for name in names if name}
+    rows = cur.execute(f"SELECT name, id FROM {table}").fetchall()
 
     mapping = {}
     for row in rows:
-        mapping[normalize_instructor_name(row["name"])] = row["id"]
+        key = normalize_instructor_name(row["name"])
+        if key in normalized:
+            mapping[key] = row["id"]
 
     return mapping
 

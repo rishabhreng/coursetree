@@ -479,11 +479,14 @@ async def get_instructor_evaluation(
             name
             for name in requested_names
             if normalize_instructor_name(name) not in resolved_name_map
+            and name not in resolved_name_map
         ]
         for name in requested_names:
             normalized = normalize_instructor_name(name)
             if normalized in resolved_name_map:
                 requested_ids.append(resolved_name_map[normalized])
+            elif name in resolved_name_map:
+                requested_ids.append(resolved_name_map[name])
 
         # Deduplicate while preserving order
         seen = set()
