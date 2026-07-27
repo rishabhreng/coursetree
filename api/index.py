@@ -28,9 +28,7 @@ from fetch_utils import (
     is_pdf_response,
     extract_charts_from_results,
     split_instructor_names,
-    normalize_instructor_name,
-    resolve_instructor_ids_by_name,
-    lookup_instructor_name,
+    get_instructor_ids,
 )
 
 from search_utils import (
@@ -469,36 +467,11 @@ async def get_instructor_evaluation(
                 "crn": crn,
             }
 
-        requested_ids = []
         requested_names = []
-
         if instructor_names:
             requested_names.extend(split_instructor_names(instructor_names))
-        resolved_name_map = resolve_instructor_ids_by_name(term, requested_names, db)
-        missing_names = [
-            name
-            for name in requested_names
-            if normalize_instructor_name(name) not in resolved_name_map
-            and name not in resolved_name_map
-        ]
-        for name in requested_names:
-            normalized = normalize_instructor_name(name)
-            if normalized in resolved_name_map:
-                requested_ids.append(resolved_name_map[normalized])
-            elif name in resolved_name_map:
-                requested_ids.append(resolved_name_map[name])
-
-        # Deduplicate while preserving order
-        seen = set()
-        unique_ids = []
-        for instr_id in requested_ids:
-            if instr_id not in seen:
-                seen.add(instr_id)
-                unique_ids.append(instr_id)
-
-        print(
-            f"[DEBUG] Resolved instructor IDs: {requested_ids}, missing names: {requested_names}"
-        )
+        
+        unique_ids = get_instructor_ids(term, requested_names, db)
 
         if not unique_ids:
             if requested_names:
@@ -508,7 +481,7 @@ async def get_instructor_evaluation(
                     "term": term,
                     "crn": crn,
                     "results": [],
-                    "missing_instructors": missing_names or requested_names,
+                    "missing_instructors": requested_names,
                 }
             raise HTTPException(
                 status_code=400,
@@ -518,7 +491,7 @@ async def get_instructor_evaluation(
 
         results = []
 
-        for instr_id in unique_ids:
+        for name, id in unique_ids.items():
             get_response = session.get(url, timeout=15)
             soup = BeautifulSoup(get_response.text, "html.parser")
 
@@ -542,10 +515,11 @@ async def get_instructor_evaluation(
                 "p_confirm": "1",
                 "p_term": term,
                 "p_type": "Instructor",
-                "p_instr": instr_id,
+                "p_instr": id,
             }
             if as_fid:
                 payload["as_fid"] = as_fid
+            
 
             response = session.post(url, data=payload, timeout=15)
 
@@ -575,11 +549,10 @@ async def get_instructor_evaluation(
                     section for section in sections if section.get("crn") == crn
                 ]
 
-            instructor_label = lookup_instructor_name(term, instr_id, db)
             results.append(
                 {
-                    "instructor_id": instr_id,
-                    "instructor_name": instructor_label,
+                    "instructor_id": id,
+                    "instructor_name": name,
                     "sections": sections,
                     "success": bool(sections),
                     "message": (
@@ -589,13 +562,12 @@ async def get_instructor_evaluation(
                     ),
                 }
             )
-
         return {
             "success": any(result.get("success") for result in results),
             "term": term,
             "crn": crn,
             "results": results,
-            "missing_instructors": missing_names,
+            "message": "Evaluation data found" if results else "No evaluation data found",
         }
 
     except HTTPException:

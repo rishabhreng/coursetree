@@ -175,80 +175,32 @@ def parse_eval_header_text(text: str) -> Dict[str, Optional[str]]:
         "section": section,
     }
 
-
-def normalize_instructor_name(name: str) -> str:
-    cleaned = re.sub(r"\s+", " ", name.strip().replace(".", ""))
-    if not cleaned:
-        return ""
-
-    if "," in cleaned:
-        last_name, given_names = cleaned.split(",", 1)
-        last_name = last_name.strip()
-        given_tokens = [token for token in given_names.split() if len(token) > 1]
-        given_name = given_tokens[0] if given_tokens else ""
-    else:
-        tokens = cleaned.split()
-        if len(tokens) == 1:
-            return tokens[0].lower()
-        last_name = tokens[-1].strip()
-        given_tokens = [token for token in tokens[:-1] if len(token) > 1]
-        given_name = given_tokens[0] if given_tokens else tokens[0]
-
-    canonical = f"{last_name} {given_name}".strip()
-    return re.sub(r"\s+", " ", canonical).lower()
-
-
 def split_instructor_names(raw: str) -> List[str]:
     if not raw:
         return []
-    if "|" in raw:
-        parts = raw.split("|")
-    else:
-        parts = [raw]
-    return [name.strip() for name in parts]
+    return list(map(lambda x: x.strip(), raw.split("|")))
 
-
-def resolve_instructor_ids_by_name(
-    term_code: str, names: List[str], db: sql.Connection
-) -> Dict[str, str]:
-    if not names:
-        return {}
-
+def get_instructor_ids(term_code: str, names: List[str], db: sql.Connection) -> Dict[str, str]:
+    ids: Dict[str, str] = {}
     table = f"instructors_{term_code}"
     cur = db.cursor()
-    exists = cur.execute(
-        "SELECT 1 FROM sqlite_master WHERE type='table' AND name = ?",
-        (table,),
-    ).fetchone()
-    if not exists:
-        return {}
+    for name in names:
+        last, first = name.split(", ")
 
-    normalized = {normalize_instructor_name(name) for name in names if name}
-    rows = cur.execute(f"SELECT name, id FROM {table}").fetchall()
+        base_query = f"SELECT name, id FROM {table} WHERE "
+        last_name_query = base_query + "name LIKE ?"
+        last_name_matches = set(cur.execute(last_name_query, (f"{last},%",)).fetchall())
+        print(last_name_matches)
 
-    mapping = {}
-    for row in rows:
-        key = normalize_instructor_name(row["name"])
-        if key in normalized:
-            mapping[key] = row["id"]
+        if len(last_name_matches) == 1: # prioritize last name match as it's more specific and reliable
+            res = last_name_matches
+        else:
+            # match by initial of first name and take intersection
 
-    return mapping
+            first_name_query = f"{base_query} name GLOB ?"
+            first_name_matches = set(cur.execute(first_name_query, (f"*{first[0]}*",)).fetchall())
 
+            res = first_name_matches.intersection(last_name_matches)
+        ids.update(res)
+    return ids
 
-def lookup_instructor_name(
-    term_code: str, instructor_id: str, db: sql.Connection
-) -> Optional[str]:
-    table = f"instructors_{term_code}"
-    cur = db.cursor()
-    exists = cur.execute(
-        "SELECT 1 FROM sqlite_master WHERE type='table' AND name = ?",
-        (table,),
-    ).fetchone()
-    if not exists:
-        return None
-
-    row = cur.execute(
-        f"SELECT name FROM {table} WHERE id = ?",
-        (instructor_id,),
-    ).fetchone()
-    return row["name"] if row else None
