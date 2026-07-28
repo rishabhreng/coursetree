@@ -492,6 +492,7 @@ async def get_instructor_evaluation(
         results = []
 
         for name, id in unique_ids.items():
+            print(f"[DEBUG] Fetching evaluation for {name} ({id})")
             get_response = session.get(url, timeout=15)
             soup = BeautifulSoup(get_response.text, "html.parser")
 
@@ -542,12 +543,16 @@ async def get_instructor_evaluation(
                     "html": str(container),
                     "charts": charts,
                 }
+                print(section)
                 sections.append(section)
 
             if crn:
                 sections = [
-                    section for section in sections if section.get("crn") == crn
+                    section for section in sections
+                    if section.get("crn") == crn or crn in (section.get("all_crns") or [])
                 ]
+            
+            print(sections)
 
             results.append(
                 {
@@ -562,12 +567,13 @@ async def get_instructor_evaluation(
                     ),
                 }
             )
+        has_evals = any(result.get("success") for result in results)
         return {
-            "success": any(result.get("success") for result in results),
+            "success": has_evals,
             "term": term,
             "crn": crn,
             "results": results,
-            "message": "Evaluation data found" if results else "No evaluation data found",
+            "message": "Evaluation data found" if has_evals else "No evaluation data found",
         }
 
     except HTTPException:
