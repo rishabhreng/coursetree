@@ -741,7 +741,6 @@ function App() {
   const formatEvalHtml = (html) => {
     if (!html) return ''
     let cleaned = html
-    let cleaned = html
       .replace(/<div class="charts">[\s\S]*?<div class="comments">/g, '<div class="comments">')
       .replace(/<div class="chart">[\s\S]*?<\/div>\s*<\/div>/g, '')
       .replace(/<img[^>]*>/g, '')
