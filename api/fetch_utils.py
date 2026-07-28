@@ -4,7 +4,7 @@ from requests import Session
 import sqlite3 as sql
 from urllib.parse import parse_qs, urlparse, unquote
 import re
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 from xml.etree import ElementTree as ET
 
@@ -139,14 +139,15 @@ def find_eval_header(container):
 
 
 def extract_label_value(text: str, label: str) -> Optional[str]:
-    pattern = rf"{re.escape(label)}\s*(.+?)(?=\s+(?:Term:|Course\(s\):|Enrolled:|Instructor\(s\):)|$)"
+    pattern = rf"{re.escape(label)}\s*(.+?)(?=\s+(?:Term:|Course\(s\):|XList\(s\):|Enrolled:|Instructor\(s\):)|$)"
     match = re.search(pattern, text, re.IGNORECASE)
     return match.group(1).strip() if match else None
 
 
-def parse_eval_header_text(text: str) -> Dict[str, Optional[str]]:
+def parse_eval_header_text(text: str) -> Dict[str, Any]:
     term = extract_label_value(text, "Term:")
     course = extract_label_value(text, "Course(s):")
+    xlist = extract_label_value(text, "XList(s):")
     enrolled = extract_label_value(text, "Enrolled:")
     instructors = extract_label_value(text, "Instructor(s):")
 
@@ -165,12 +166,24 @@ def parse_eval_header_text(text: str) -> Dict[str, Optional[str]]:
             if code_match.group(3):
                 section = code_match.group(3)
 
+    xlist_crns = re.findall(r"\((\d{4,6})\)", xlist) if xlist else []
+
+    all_crns = []
+    if crn:
+        all_crns.append(crn)
+    for xcrn in xlist_crns:
+        if xcrn not in all_crns:
+            all_crns.append(xcrn)
+
     return {
         "term_label": term,
         "course": course,
+        "xlist": xlist,
         "enrolled": enrolled,
         "instructors": instructors,
         "crn": crn,
+        "xlist_crns": xlist_crns,
+        "all_crns": all_crns,
         "course_code": course_code,
         "section": section,
     }
@@ -190,13 +203,11 @@ def get_instructor_ids(term_code: str, names: List[str], db: sql.Connection) -> 
         base_query = f"SELECT name, id FROM {table} WHERE "
         last_name_query = base_query + "name LIKE ?"
         last_name_matches = set(cur.execute(last_name_query, (f"{last},%",)).fetchall())
-        print(last_name_matches)
 
         if len(last_name_matches) == 1: # prioritize last name match as it's more specific and reliable
             res = last_name_matches
         else:
             # match by initial of first name and take intersection
-
             first_name_query = f"{base_query} name GLOB ?"
             first_name_matches = set(cur.execute(first_name_query, (f"*{first[0]}*",)).fetchall())
 

@@ -29,11 +29,182 @@ const getOrCreateClientId = () => {
   return generated
 }
 
+function TermSelect({ id, value, onChange, options, placeholder = "Select term" }) {
+  const [isOpen, setIsOpen] = useState(false)
+  const [openUpward, setOpenUpward] = useState(false)
+  const [filterText, setFilterText] = useState('')
+  const [highlightedIndex, setHighlightedIndex] = useState(0)
+  const dropdownRef = useRef(null)
+  const optionsListRef = useRef(null)
+  const inputRef = useRef(null)
+
+  const selectedOption = options.find((opt) => opt.code === value)
+  const currentLabel = selectedOption ? selectedOption.term : (value === 'all' ? 'All terms' : value)
+
+  useEffect(() => {
+    if (!isOpen) {
+      setFilterText(currentLabel)
+    } else if (dropdownRef.current) {
+      const rect = dropdownRef.current.getBoundingClientRect()
+      const spaceBelow = window.innerHeight - rect.bottom
+      if (spaceBelow < 260 && rect.top > 260) {
+        setOpenUpward(true)
+      } else {
+        setOpenUpward(false)
+      }
+    }
+  }, [value, currentLabel, isOpen])
+
+  const filteredOptions = useMemo(() => {
+    if (!isOpen || !filterText.trim()) return options
+    const query = filterText.toLowerCase().trim()
+    const tokens = query.split(/\s+/).filter(Boolean)
+
+    const matches = options.filter((opt) => {
+      const termLower = opt.term.toLowerCase()
+      const codeLower = opt.code.toLowerCase()
+      const combined = `${termLower} ${codeLower}`
+
+      return tokens.every((token) => combined.includes(token))
+    })
+
+    return matches.sort((a, b) => {
+      const aTermLower = a.term.toLowerCase()
+      const bTermLower = b.term.toLowerCase()
+      const aCodeLower = a.code.toLowerCase()
+      const bCodeLower = b.code.toLowerCase()
+
+      const aExact = (a.code === 'all' && query === 'all') || aTermLower === query || aCodeLower === query
+      const bExact = (b.code === 'all' && query === 'all') || bTermLower === query || bCodeLower === query
+      if (aExact && !bExact) return -1
+      if (!aExact && bExact) return 1
+
+      const firstToken = tokens[0] || query
+      const aStartsWith = aTermLower.startsWith(query) || aCodeLower.startsWith(query) || aTermLower.startsWith(firstToken)
+      const bStartsWith = bTermLower.startsWith(query) || bCodeLower.startsWith(query) || bTermLower.startsWith(firstToken)
+      if (aStartsWith && !bStartsWith) return -1
+      if (!aStartsWith && bStartsWith) return 1
+
+      return 0
+    })
+  }, [options, filterText, isOpen])
+
+  useEffect(() => {
+    setHighlightedIndex(0)
+  }, [filteredOptions])
+
+  useEffect(() => {
+    if (isOpen && optionsListRef.current) {
+      const highlightedEl = optionsListRef.current.children[highlightedIndex]
+      if (highlightedEl) {
+        highlightedEl.scrollIntoView({ block: 'nearest' })
+      }
+    }
+  }, [highlightedIndex, isOpen])
+
+  useEffect(() => {
+    const handleClickOutside = (e) => {
+      if (dropdownRef.current && !dropdownRef.current.contains(e.target)) {
+        setIsOpen(false)
+        setFilterText(currentLabel)
+      }
+    }
+    document.addEventListener('mousedown', handleClickOutside)
+    return () => document.removeEventListener('mousedown', handleClickOutside)
+  }, [currentLabel])
+
+  const handleSelect = (optionCode) => {
+    onChange(optionCode)
+    setIsOpen(false)
+    inputRef.current?.blur()
+  }
+
+  const handleKeyDown = (e) => {
+    if (!isOpen) {
+      if (e.key === 'ArrowDown' || e.key === 'ArrowUp' || e.key === 'Enter') {
+        setIsOpen(true)
+        setFilterText('')
+        e.preventDefault()
+      }
+      return
+    }
+
+    if (e.key === 'ArrowDown') {
+      e.preventDefault()
+      setHighlightedIndex((prev) => Math.min(prev + 1, filteredOptions.length - 1))
+    } else if (e.key === 'ArrowUp') {
+      e.preventDefault()
+      setHighlightedIndex((prev) => Math.max(prev - 1, 0))
+    } else if (e.key === 'Enter') {
+      e.preventDefault()
+      if (filteredOptions[highlightedIndex]) {
+        handleSelect(filteredOptions[highlightedIndex].code)
+      }
+    } else if (e.key === 'Escape' || e.key === 'Tab') {
+      setIsOpen(false)
+      setFilterText(currentLabel)
+      inputRef.current?.blur()
+    }
+  }
+
+  return (
+    <div className="term-select-container" ref={dropdownRef}>
+      <div className="term-select-input-wrap">
+        <input
+          id={id}
+          ref={inputRef}
+          type="text"
+          className="term-select-input"
+          value={isOpen ? filterText : currentLabel}
+          placeholder={placeholder}
+          onFocus={(e) => {
+            setIsOpen(true)
+            setFilterText('')
+            e.target.select()
+          }}
+          onChange={(e) => {
+            setFilterText(e.target.value)
+            if (!isOpen) setIsOpen(true)
+          }}
+          onKeyDown={handleKeyDown}
+          autoComplete="off"
+        />
+        <span className={`term-select-arrow ${isOpen ? 'open' : ''}`}>▾</span>
+      </div>
+
+      {isOpen && (
+        <div className={`term-select-dropdown ${openUpward ? 'open-upward' : ''}`} ref={optionsListRef}>
+          {filteredOptions.length > 0 ? (
+            filteredOptions.map((opt, idx) => (
+              <div
+                key={opt.code}
+                className={`term-select-option ${opt.code === value ? 'selected' : ''} ${idx === highlightedIndex ? 'highlighted' : ''}`}
+                onMouseEnter={() => setHighlightedIndex(idx)}
+                onMouseDown={(e) => {
+                  e.preventDefault()
+                  handleSelect(opt.code)
+                }}
+              >
+                <span className="term-name">{opt.term}</span>
+                {opt.code !== 'all' && <span className="term-code-badge">{opt.code}</span>}
+              </div>
+            ))
+          ) : (
+            <div className="term-select-no-results">No matching terms</div>
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
+
 function App() {
   const [clientId] = useState(() => getOrCreateClientId())
   const [query, setQuery] = useState('')
   const [termStart, setTermStart] = useState('all')
   const [termEnd, setTermEnd] = useState('all')
+  const [termStartText, setTermStartText] = useState('')
+  const [termEndText, setTermEndText] = useState('')
   const [terms, setTerms] = useState([])
   const [subjects, setSubjects] = useState([])
   const [results, setResults] = useState({})
@@ -171,11 +342,13 @@ function App() {
   }, [terms])
 
   const getTermLabel = (code) => {
+    if (code === 'all') return 'All terms'
     const foundTerm = termOptions.find((term) => term.code === code)
     if (foundTerm) return foundTerm.term
     if (code === DEFAULT_TERM_CODE) return 'Current Term'
     return code
   }
+
   const latestTermCode = termOptions.length
     ? termOptions[0].code
     : DEFAULT_TERM_CODE
@@ -183,14 +356,18 @@ function App() {
   const endOptions = startIndex >= 0 ? termOptions.slice(0, startIndex + 1) : termOptions
   const showTermEnd = termStart !== 'all' && termStart !== latestTermCode
 
-  const handleTermStartSelect = (event) => {
-    const nextValue = event.target.value
+  const handleTermStartChange = (nextCode) => {
+    if (previousSearch) setPreviousSearch(null)
     const wasAll = termStart === 'all'
-
-    setTermStart(nextValue)
-    if (wasAll && nextValue !== 'all') {
-      setTermEnd(nextValue)
+    setTermStart(nextCode)
+    if (wasAll && nextCode !== 'all') {
+      setTermEnd(nextCode)
     }
+  }
+
+  const handleTermEndChange = (nextCode) => {
+    if (previousSearch) setPreviousSearch(null)
+    setTermEnd(nextCode)
   }
 
   useEffect(() => {
@@ -358,6 +535,7 @@ function App() {
     }
 
     setQuery(trimmed)
+    window.scrollTo({ top: 0, behavior: 'smooth' })
   }
 
   const handleRestorePreviousSearch = () => {
@@ -366,10 +544,14 @@ function App() {
     setTermStart(previousSearch.termStart || 'all')
     setTermEnd(previousSearch.termEnd || 'all')
     setPreviousSearch(null)
+    window.scrollTo({ top: 0, behavior: 'smooth' })
   }
 
   const handleQueryChange = (e) => {
     const value = e.target.value.replace(/[^a-zA-Z0-9\- ]/g, '')
+    if (previousSearch) {
+      setPreviousSearch(null)
+    }
     setQuery(value)
   }
 
@@ -405,24 +587,100 @@ function App() {
     setExpandedCourses(newExpanded)
   }
 
-  const toggleEvalCollapsed = (evalKey) => {
+  const toggleEvalCollapsed = (evalKey, course) => {
+    const instrKey = course ? getInstructorEvalKey(course) : null
     const newCollapsed = new Set(collapsedEvals)
     if (newCollapsed.has(evalKey)) {
       newCollapsed.delete(evalKey)
+      if (instrKey) {
+        setCollapsedInstructorEvals((prev) => new Set(prev).add(instrKey))
+      }
     } else {
       newCollapsed.add(evalKey)
     }
     setCollapsedEvals(newCollapsed)
   }
 
-  const toggleInstructorEvalCollapsed = (evalKey) => {
+  const toggleInstructorEvalCollapsed = (instrKey, course) => {
+    const evalKey = course ? getEvaluationKey(course) : null
     const newCollapsed = new Set(collapsedInstructorEvals)
-    if (newCollapsed.has(evalKey)) {
-      newCollapsed.delete(evalKey)
+    if (newCollapsed.has(instrKey)) {
+      newCollapsed.delete(instrKey)
+      if (evalKey) {
+        setCollapsedEvals((prev) => new Set(prev).add(evalKey))
+      }
     } else {
-      newCollapsed.add(evalKey)
+      newCollapsed.add(instrKey)
     }
     setCollapsedInstructorEvals(newCollapsed)
+  }
+
+  const handleCourseEvalClick = (course) => {
+    const evalKey = getEvaluationKey(course)
+    const instrKey = getInstructorEvalKey(course)
+
+    setCollapsedInstructorEvals((prev) => new Set(prev).add(instrKey))
+
+    const evalState = evaluationLookup[evalKey]
+    if (!evalState) {
+      setCollapsedEvals((prev) => {
+        const next = new Set(prev)
+        next.delete(evalKey)
+        return next
+      })
+      fetchEvaluation(course)
+    } else if (evalState.status === 'available') {
+      setCollapsedEvals((prev) => {
+        const next = new Set(prev)
+        if (next.has(evalKey)) {
+          next.delete(evalKey)
+        } else {
+          next.add(evalKey)
+        }
+        return next
+      })
+    } else {
+      setCollapsedEvals((prev) => {
+        const next = new Set(prev)
+        next.delete(evalKey)
+        return next
+      })
+      fetchEvaluation(course)
+    }
+  }
+
+  const handleInstructorEvalClick = (course) => {
+    const evalKey = getEvaluationKey(course)
+    const instrKey = getInstructorEvalKey(course)
+
+    setCollapsedEvals((prev) => new Set(prev).add(evalKey))
+
+    const instrState = instructorEvalLookup[instrKey]
+    if (!instrState) {
+      setCollapsedInstructorEvals((prev) => {
+        const next = new Set(prev)
+        next.delete(instrKey)
+        return next
+      })
+      fetchInstructorEvaluations(course)
+    } else if (instrState.status === 'available') {
+      setCollapsedInstructorEvals((prev) => {
+        const next = new Set(prev)
+        if (next.has(instrKey)) {
+          next.delete(instrKey)
+        } else {
+          next.add(instrKey)
+        }
+        return next
+      })
+    } else {
+      setCollapsedInstructorEvals((prev) => {
+        const next = new Set(prev)
+        next.delete(instrKey)
+        return next
+      })
+      fetchInstructorEvaluations(course)
+    }
   }
 
   const toggleInstructorSectionCollapsed = (sectionKey) => {
@@ -482,26 +740,96 @@ function App() {
 
   const formatEvalHtml = (html) => {
     if (!html) return ''
-    return html
+    let cleaned = html
       .replace(/<div class="charts">[\s\S]*?<div class="comments">/g, '<div class="comments">')
       .replace(/<div class="chart">[\s\S]*?<\/div>\s*<\/div>/g, '')
       .replace(/<img[^>]*>/g, '')
+      .replace(/(?:<p[^>]*>)?\s*Class Mean\s*-\s*Average score within the CRN[\s\S]*?across all CRNs at Rice for the term\.?\s*(?:<\/p>)?/gi, '')
+      .replace(/Class Mean\s*-\s*Average score within the CRN[\s\S]*?across all CRNs at Rice for the term\.?/gi, '')
+      .replace(/(?:<p[^>]*>|<div[^>]*>)?\s*<a[^>]*>\s*Report a Concern\s*<\/a>\s*(?:<\/p>|<\/div>)?/gi, '')
+      .replace(/<a[^>]*>\s*Report a Concern\s*<\/a>/gi, '')
+
+    try {
+      const parser = new DOMParser()
+      const doc = parser.parseFromString(cleaned, 'text/html')
+
+      let totalText = ''
+      const totalMatch = doc.body.textContent.match(/Total Comments:\s*\d+/i)
+      if (totalMatch) {
+        totalText = totalMatch[0]
+      }
+
+      // Convert line breaks and block element closings to newlines for reliable text splitting
+      const tempDiv = doc.createElement('div')
+      tempDiv.innerHTML = cleaned
+        .replace(/<br\s*\/?>/gi, '\n')
+        .replace(/<\/(p|div|tr|td|li|h\d)>/gi, '\n')
+
+      const rawText = tempDiv.textContent || ''
+      const lines = rawText.split('\n').map((s) => s.trim()).filter(Boolean)
+      const dateRegex = /\d{2}\/\d{2}\/\d{4}\s+\d{1,2}:\d{2}\s*(?:[AP]\.?M\.?)/gi
+      const items = []
+
+      let currentParts = []
+      lines.forEach((line) => {
+        if (/student comments/i.test(line) || /total comments/i.test(line)) return
+
+        const dateMatch = line.match(dateRegex)
+        if (dateMatch) {
+          const dateStr = dateMatch[0]
+          const remaining = line.replace(dateRegex, '').trim()
+          if (remaining) {
+            currentParts.push(remaining)
+          }
+          const fullCommentText = currentParts.join(' ').trim()
+          if (fullCommentText) {
+            items.push({ text: fullCommentText, date: dateStr })
+          }
+          currentParts = []
+        } else {
+          currentParts.push(line)
+        }
+      })
+
+      if (items.length > 0) {
+        let formattedHtml = `<div class="comments-container">`
+        formattedHtml += `<div class="comments-header">`
+        formattedHtml += `<h4 class="comments-title">Student Comments</h4>`
+        if (totalText) {
+          formattedHtml += `<span class="comments-count">${totalText}</span>`
+        }
+        formattedHtml += `</div>`
+
+        formattedHtml += `<div class="comments-list">`
+        items.forEach((item) => {
+          formattedHtml += `<div class="comment-card">`
+          formattedHtml += `<div class="comment-text">${item.text}</div>`
+          formattedHtml += `<div class="comment-date">${item.date}</div>`
+          formattedHtml += `</div>`
+        })
+        formattedHtml += `</div></div>`
+
+        return formattedHtml
+      }
+    } catch (err) {
+      console.error('Error formatting comments:', err)
+    }
+
+    return cleaned
   }
 
-  const renderCharts = (charts) => {
+  const renderCharts = (charts, is3x3 = false) => {
     if (!charts || charts.length === 0) return null
 
     return (
       <div className="charts-section">
         <div className="charts-title">Survey Results</div>
-        <div className="charts-grid">
+        <div className={`charts-grid ${is3x3 ? 'charts-grid-3x3' : ''}`}>
           {charts.map((chart, idx) => {
             const chartData = chart.labels.map((label, i) => ({
               name: label,
               percent: chart.values[i],
             }))
-
-            const colors = ['#667CC7', '#7B8FD7', '#90A3E7', '#A5B7F7', '#BAC5FF']
 
             return (
               <div key={idx} className="chart-container">
@@ -510,35 +838,32 @@ function App() {
                   <span>Total Responses: {chart.total}</span>
                 </div>
                 <div className="chart-wrapper">
-                  <ResponsiveContainer width="100%" height={200}>
-                    <BarChart data={chartData} margin={{ top: 10, right: 30, left: 0, bottom: 50 }}>
+                  <ResponsiveContainer width="100%" height={260}>
+                    <BarChart data={chartData} margin={{ top: 10, right: 15, left: -15, bottom: 25 }}>
                       <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.1)" />
                       <XAxis
                         dataKey="name"
-                        angle={-45}
+                        angle={-35}
                         textAnchor="end"
-                        height={80}
+                        height={70}
                         interval={0}
-                        tick={{ fill: '#E8E8E8', fontSize: 12, fontWeight: 500 }}
+                        tick={{ fill: '#E8E8E8', fontSize: 11, fontWeight: 500 }}
                       />
-                      <YAxis tick={{ fill: '#E8E8E8' }} />
+                      <YAxis tick={{ fill: '#E8E8E8', fontSize: 11 }} />
                       <Tooltip
-                        contentStyle={{
-                          backgroundColor: 'rgba(0, 26, 71, 0.95)',
-                          border: '1px solid rgba(168, 85, 247, 0.3)',
-                          borderRadius: '4px',
-                          color: '#E8E8E8',
+                        isAnimationActive={false}
+                        content={({ active, payload }) => {
+                          if (active && payload && payload.length) {
+                            return (
+                              <div className="custom-chart-tooltip">
+                                {`${payload[0].value}%`}
+                              </div>
+                            )
+                          }
+                          return null
                         }}
-                        labelStyle={{ color: '#E8E8E8' }}
-                        itemStyle={{ color: '#E8E8E8' }}
-                        formatter={(value) => [`${value}%`, 'Percent']}
-                        wrapperStyle={{ color: '#E8E8E8' }}
                       />
-                      <Bar dataKey="percent" radius={[8, 8, 0, 0]}>
-                        {chartData.map((_, i) => (
-                          <Cell key={`cell-${i}`} fill={colors[i % colors.length]} />
-                        ))}
-                      </Bar>
+                      <Bar dataKey="percent" fill="#667CC7" radius={[4, 4, 0, 0]} />
                     </BarChart>
                   </ResponsiveContainer>
                 </div>
@@ -789,8 +1114,8 @@ function App() {
       <div className="header">
         <div className="header-top">
           <div className="header-copy">
-            <h1>Rice Course Explorer</h1>
-            <p className="tagline">Search for courses across all terms</p>
+            <h1>Rice Course Viewer</h1>
+            <p className="tagline">Search for Rice courses across the years</p>
           </div>
           <div className="esther-auth-panel">
             <button
@@ -816,7 +1141,8 @@ function App() {
                 className="previous-search-btn"
                 onClick={handleRestorePreviousSearch}
               >
-                Back to previous search
+                <span className="previous-search-icon">↩</span>
+                <span>Back to previous search{previousSearch.query ? `: "${previousSearch.query}"` : ''}</span>
               </button>
             </div>
           )}
@@ -837,7 +1163,7 @@ function App() {
                     Type CRN (12345), CRS (ABCD 123), course title (Intro to Life I), instructor (John Doe), or any combination.
                   </div>
                 </div>
-                <div className="tooltip-wrap">
+                {/* <div className="tooltip-wrap">
                   <button
                     type="button"
                     className="tooltip-trigger subjects-info-btn"
@@ -863,7 +1189,7 @@ function App() {
                       ))}
                     </div>
                   </div>
-                </div>
+                </div> */}
               </div>
               <input
                 id="query"
@@ -879,34 +1205,25 @@ function App() {
               <label>Term Range</label>
               <div className={`term-range ${showTermEnd ? '' : 'term-range-single'}`}>
                 <div className="term-range-field">
-                  <span className="term-range-label">From</span>
-                  <select
+                  {showTermEnd && <span className="term-range-label">From</span>}
+                  <TermSelect
                     id="term-start"
                     value={termStart}
-                    onChange={handleTermStartSelect}
-                  >
-                    <option value="all">All terms</option>
-                    {termOptions.map((term) => (
-                      <option key={term.code} value={term.code}>
-                        {term.term}
-                      </option>
-                    ))}
-                  </select>
+                    onChange={handleTermStartChange}
+                    options={[{ code: 'all', term: 'All terms' }, ...termOptions]}
+                    placeholder="Type or select term"
+                  />
                 </div>
                 {showTermEnd && (
                   <div className="term-range-field">
                     <span className="term-range-label">To</span>
-                    <select
+                    <TermSelect
                       id="term-end"
                       value={termEnd}
-                      onChange={(e) => setTermEnd(e.target.value)}
-                    >
-                      {endOptions.map((term) => (
-                        <option key={term.code} value={term.code}>
-                          {term.term}
-                        </option>
-                      ))}
-                    </select>
+                      onChange={handleTermEndChange}
+                      options={endOptions}
+                      placeholder="Type or select term"
+                    />
                   </div>
                 )}
               </div>
@@ -927,25 +1244,9 @@ function App() {
                 ? courseInstances
                 : [courseInstances[0]]
 
-              const firstCourse = courseInstances[0]
-              const courseUrl = firstCourse.course_page ||
-                `https://courses.rice.edu/courses/courses/!SWKSCAT.cat?p_action=COURSE&p_term=${firstCourse.term}&p_crn=${firstCourse.crn}`
-
               return (
                 <div key={courseCode} className="course-group">
-                  <a
-                    href={courseUrl}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="course-header"
-                    onClick={(e) => {
-                      // Allow expand/collapse if clicking the expand indicator
-                      if (e.target.closest('.expand-indicator')) {
-                        e.preventDefault()
-                        courseInstances.length > 1 && toggleExpanded(courseCode)
-                      }
-                    }}
-                  >
+                  <div className="course-header">
                     <div className="header-left">
                       <h3>{courseCode}</h3>
                       {courseInstances.length > 0 && (
@@ -955,17 +1256,13 @@ function App() {
                     {courseInstances.length > 1 && (
                       <div
                         className="expand-indicator"
-                        onClick={(e) => {
-                          e.stopPropagation()
-                          e.preventDefault()
-                          toggleExpanded(courseCode)
-                        }}
+                        onClick={() => toggleExpanded(courseCode)}
                       >
                         <span className="badge">{courseInstances.length}</span>
                         <span className={`chevron ${isExpanded ? 'open' : ''}`}>▸</span>
                       </div>
                     )}
-                  </a>
+                  </div>
 
                   <div className="course-instances">
                     {displayInstances.map((course) => {
@@ -1002,16 +1299,15 @@ function App() {
                                         {isTba ? (
                                           <span className="instructor-text muted">{instructor}</span>
                                         ) : (
-                                          <a
-                                            href="#"
-                                            className="instructor-link"
-                                            onClick={(e) => {
-                                              e.preventDefault()
-                                              handleInstructorClick(instructor)
-                                            }}
+                                          <button
+                                            type="button"
+                                            className="instructor-btn"
+                                            title={`Search courses taught by ${instructor}`}
+                                            onClick={() => handleInstructorClick(instructor)}
                                           >
-                                            {instructor}
-                                          </a>
+                                            <span className="instructor-search-icon">🔎</span>
+                                            <span>{instructor}</span>
+                                          </button>
                                         )}
                                       </div>
                                     )
@@ -1051,7 +1347,7 @@ function App() {
                             <button
                               type="button"
                               className="evaluation-btn"
-                              onClick={() => fetchEvaluation(course)}
+                              onClick={() => handleCourseEvalClick(course)}
                               disabled={evaluationState?.status === 'loading'}
                             >
                               {evaluationState?.status === 'loading' ? 'Loading...' : 'Course Evals'}
@@ -1059,7 +1355,7 @@ function App() {
                             <button
                               type="button"
                               className="instructor-eval-btn"
-                              onClick={() => fetchInstructorEvaluations(course)}
+                              onClick={() => handleInstructorEvalClick(course)}
                               disabled={instructorEvalState?.status === 'loading'}
                             >
                               {instructorEvalState?.status === 'loading' ? 'Loading...' : 'Instructor Evals'}
@@ -1105,7 +1401,7 @@ function App() {
                               <button
                                 type="button"
                                 className="collapse-eval-btn"
-                                onClick={() => toggleEvalCollapsed(getEvaluationKey(course))}
+                                onClick={() => toggleEvalCollapsed(getEvaluationKey(course), course)}
                               >
                                 {collapsedEvals.has(getEvaluationKey(course)) ? '▸ Show Evaluation' : '▾ Hide Evaluation'}
                               </button>
@@ -1129,7 +1425,7 @@ function App() {
                               <button
                                 type="button"
                                 className="collapse-instructor-eval-btn"
-                                onClick={() => toggleInstructorEvalCollapsed(getInstructorEvalKey(course))}
+                                onClick={() => toggleInstructorEvalCollapsed(getInstructorEvalKey(course), course)}
                               >
                                 {collapsedInstructorEvals.has(getInstructorEvalKey(course)) ? '▸ Show Instructor Evals' : '▾ Hide Instructor Evals'}
                               </button>
@@ -1144,24 +1440,27 @@ function App() {
                                     const instructorLabel = result.instructor_name || result.instructor_id || 'Instructor'
                                     const instructorKey = `${getInstructorEvalKey(course)}-${result.instructor_id || instructorLabel}`
                                     const isCollapsed = collapsedInstructorSections.has(instructorKey)
+                                    const isSingleInstructor = instructorEvalState.results.length === 1
 
                                     return (
-                                      <div key={instructorKey} className="instructor-eval-card">
-                                        <button
-                                          type="button"
-                                          className="collapse-instructor-btn"
-                                          onClick={() => toggleInstructorSectionCollapsed(instructorKey)}
-                                        >
-                                          {isCollapsed ? `▸ ${instructorLabel}` : `▾ ${instructorLabel}`}
-                                        </button>
-                                        {!isCollapsed && (
+                                      <div key={instructorKey} className={isSingleInstructor ? '' : 'instructor-eval-card'}>
+                                        {!isSingleInstructor && (
+                                          <button
+                                            type="button"
+                                            className="collapse-instructor-btn"
+                                            onClick={() => toggleInstructorSectionCollapsed(instructorKey)}
+                                          >
+                                            {isCollapsed ? `▸ ${instructorLabel}` : `▾ ${instructorLabel}`}
+                                          </button>
+                                        )}
+                                        {(!isSingleInstructor ? !isCollapsed : true) && (
                                           <div className="instructor-eval-sections">
                                             {(!result.sections || result.sections.length === 0) && (
                                               <p className="evaluation-status neutral">{result.message || 'No evaluation data found'}</p>
                                             )}
                                             {result.sections?.map((section, idx) => (
                                               <div key={`${instructorKey}-${idx}`} className="instructor-eval-section">
-                                                {renderCharts(section.charts)}
+                                                {renderCharts(section.charts, true)}
                                                 <div className="comments-section">
                                                   <div
                                                     dangerouslySetInnerHTML={{
@@ -1219,9 +1518,9 @@ function App() {
         </section>
       </div>
 
-      <footer className="app-footer">
+      {/* <footer className="app-footer">
         <p>Built by Rishabh Rengarajan, Rice '29</p>
-      </footer>
+      </footer> */}
 
       {showAuthModal && (
         <div className="modal-overlay auth-modal-overlay">
@@ -1235,23 +1534,25 @@ function App() {
             </p>
 
             <form onSubmit={handleAuthSubmit}>
-              <div className="auth-field">
-                <label>Rice NetID</label>
-                <input
-                  type="text"
-                  value={netid}
-                  onChange={(e) => setNetid(e.target.value)}
-                  required
-                />
-              </div>
-              <div className="auth-field">
-                <label>Password</label>
-                <input
-                  type="password"
-                  value={password}
-                  onChange={(e) => setPassword(e.target.value)}
-                  required
-                />
+              <div className="auth-fields-row">
+                <div className="auth-field">
+                  <label>Rice NetID</label>
+                  <input
+                    type="text"
+                    value={netid}
+                    onChange={(e) => setNetid(e.target.value)}
+                    required
+                  />
+                </div>
+                <div className="auth-field">
+                  <label>Password</label>
+                  <input
+                    type="password"
+                    value={password}
+                    onChange={(e) => setPassword(e.target.value)}
+                    required
+                  />
+                </div>
               </div>
 
               {authError && <p className="auth-error">{authError}</p>}
