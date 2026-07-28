@@ -741,6 +741,7 @@ function App() {
   const formatEvalHtml = (html) => {
     if (!html) return ''
     let cleaned = html
+    let cleaned = html
       .replace(/<div class="charts">[\s\S]*?<div class="comments">/g, '<div class="comments">')
       .replace(/<div class="chart">[\s\S]*?<\/div>\s*<\/div>/g, '')
       .replace(/<img[^>]*>/g, '')
@@ -844,11 +845,14 @@ function App() {
                       <XAxis
                         dataKey="name"
                         angle={-35}
+                        angle={-35}
                         textAnchor="end"
                         height={70}
                         interval={0}
                         tick={{ fill: '#E8E8E8', fontSize: 11, fontWeight: 500 }}
+                        tick={{ fill: '#E8E8E8', fontSize: 11, fontWeight: 500 }}
                       />
+                      <YAxis tick={{ fill: '#E8E8E8', fontSize: 11 }} />
                       <YAxis tick={{ fill: '#E8E8E8', fontSize: 11 }} />
                       <Tooltip
                         isAnimationActive={false}

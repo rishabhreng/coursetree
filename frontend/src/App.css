@@ -734,6 +734,7 @@ body {
 
 .header-left {
   width: 100%;
+  width: 100%;
   text-align: center;
   padding: 8px 90px 8px 16px;
   display: flex;
@@ -759,6 +760,10 @@ body {
 }
 
 .expand-indicator {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
   position: absolute;
   top: 0;
   right: 0;
@@ -798,6 +803,10 @@ body {
   font-size: 1.8rem;
   color: var(--success);
   transition: transform 0.2s ease;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  line-height: 1;
   display: inline-flex;
   align-items: center;
   justify-content: center;
