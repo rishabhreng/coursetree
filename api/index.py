@@ -2,7 +2,7 @@ import re
 from typing import Dict, List, Optional
 from xml.etree import ElementTree as ET
 
-from fastapi import FastAPI, HTTPException, Depends, Header
+from fastapi import FastAPI, HTTPException, Depends, Header, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 import sqlite3 as sql
@@ -95,7 +95,10 @@ async def auth_status(
 
 @app.get("/api/courses/", response_model=CoursesResponse)
 def search_courses(
-    q: str,
+    q: Optional[str] = "",
+    distribution_group: Optional[str] = None,
+    analyzing_diversity: Optional[bool] = False,
+    distributions: Optional[List[str]] = Query(None),
     term_code: str = DEFAULT_COURSE_TERM_CODE,
     term_start: Optional[str] = None,
     term_end: Optional[str] = None,
@@ -104,14 +107,53 @@ def search_courses(
     db: sql.Connection = Depends(get_db),
 ) -> CoursesResponse:
     try:
-        q = clean_query(q)
-        fts_query = convert_to_fts_query(q)
-        if not fts_query:
+        # Backward compatibility with distributions parameter list
+        if distributions:
+            for d in distributions:
+                for item in d.split(","):
+                    item_str = item.strip()
+                    if item_str == "Analyzing Diversity Course":
+                        analyzing_diversity = True
+                    elif item_str in ["Distribution Group I", "Distribution Group II", "Distribution Group III"]:
+                        distribution_group = item_str
+
+        q_clean = clean_query(q) if q else ""
+        fts_query = convert_to_fts_query(q_clean) if q_clean else ""
+
+        dist_fts_clauses = []
+        if analyzing_diversity:
+            dist_fts_clauses.append('distribution : "Analyzing Diversity"')
+
+        if distribution_group and distribution_group not in ["all", "none", ""]:
+            if distribution_group == "Distribution Group I":
+                dist_fts_clauses.append('distribution : "Distribution Group I"')
+            elif distribution_group == "Distribution Group II":
+                dist_fts_clauses.append('distribution : "Distribution Group II"')
+            elif distribution_group == "Distribution Group III":
+                dist_fts_clauses.append('distribution : "Distribution Group III"')
+            else:
+                escaped = distribution_group.replace('"', '""')
+                dist_fts_clauses.append(f'distribution : "{escaped}"')
+
+        dist_fts = ""
+        if dist_fts_clauses:
+            if len(dist_fts_clauses) == 1:
+                dist_fts = dist_fts_clauses[0]
+            else:
+                dist_fts = f"({' AND '.join(dist_fts_clauses)})"
+
+        if fts_query and dist_fts:
+            combined_fts = f"({fts_query}) AND {dist_fts}"
+        elif fts_query:
+            combined_fts = fts_query
+        elif dist_fts:
+            combined_fts = dist_fts
+        else:
             return {}
 
         # 1. Prepare base WHERE clause and parameters
         where_clause = "WHERE global_search MATCH ?"
-        base_params = [fts_query]
+        base_params = [combined_fts]
 
         if term_code and term_code != "all":
             where_clause += " AND term = ?"
@@ -149,15 +191,15 @@ def search_courses(
                     base_params.append(end_int)
 
         # 2. Determine secondary sort and specific CTE parameters
-        if re.match(r"^[A-Z]{4}\s*\d{3}$", q):
+        if q_clean and re.match(r"^[A-Z]{4}\s*\d{3}$", q_clean):
             # Exact searches: use the unified best_search_rank so ranks aren't split
             secondary_sort = "best_search_rank ASC"
             cte_params = []
 
-        elif q in VALID_SUBJECTS:
+        elif q_clean and q_clean in VALID_SUBJECTS:
             # Subject-only searches: recency tier -> true numerical order
             secondary_sort = "CAST(SUBSTR(crs, ?) AS INTEGER) ASC"
-            cte_params = [len(q) + 2]
+            cte_params = [len(q_clean) + 2]
 
         else:
             # General keyword searches: use unified best_search_rank

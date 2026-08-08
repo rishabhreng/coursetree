@@ -102,10 +102,7 @@ body {
   font-size: 1.8rem;
   font-weight: 700;
   margin: 0;
-  background: linear-gradient(135deg, var(--primary-light) 0%, #7c3aed 100%);
-  -webkit-background-clip: text;
-  -webkit-text-fill-color: transparent;
-  background-clip: text;
+  color: #3b82f6;
   word-wrap: break-word;
   overflow-wrap: break-word;
   white-space: normal;
@@ -366,6 +363,154 @@ body {
 
 .term-range.term-range-single {
   grid-template-columns: 1fr;
+}
+
+.distribution-filters-container {
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+  width: 100%;
+}
+
+.distribution-filter-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 16px;
+  width: 100%;
+}
+
+.distribution-group-select-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  flex: 1 1 280px;
+  min-width: 0;
+}
+
+.distribution-ad-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  flex: 1 1 220px;
+  min-width: 0;
+}
+
+.distribution-filters-label {
+  font-size: 0.75rem;
+  font-weight: 700;
+  color: var(--text-tertiary);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.distribution-chips-group {
+  display: flex;
+  width: 100%;
+  max-width: 100%;
+  background: rgba(0, 0, 0, 0.25);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 20px;
+  padding: 3px;
+  gap: 2px;
+  box-sizing: border-box;
+}
+
+.distribution-chip-btn {
+  flex: 1 1 0%;
+  min-width: 0;
+  background: transparent;
+  border: none;
+  border-radius: 16px;
+  padding: 6px 8px;
+  color: var(--text-secondary);
+  font-family: inherit;
+  font-size: 0.8rem;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+  text-align: center;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  transition: all 0.2s ease;
+}
+
+.distribution-chip-btn:hover {
+  color: var(--text-primary);
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.distribution-chip-btn.active {
+  background: #2563eb;
+  color: #ffffff;
+  box-shadow: 0 2px 8px rgba(37, 99, 235, 0.4);
+}
+
+.distribution-checkbox-chip {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 14px;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  border-radius: 20px;
+  color: var(--text-secondary);
+  font-size: 0.84rem;
+  font-weight: 500;
+  cursor: pointer;
+  user-select: none;
+  transition: all 0.2s ease;
+  min-height: 34px;
+  height: auto;
+  white-space: nowrap;
+  max-width: 100%;
+  box-sizing: border-box;
+}
+
+.distribution-checkbox-chip input[type="checkbox"] {
+  position: absolute;
+  opacity: 0;
+  cursor: pointer;
+  height: 0;
+  width: 0;
+}
+
+.distribution-checkbox-chip .checkbox-custom {
+  width: 15px;
+  height: 15px;
+  border: 1.5px solid rgba(255, 255, 255, 0.4);
+  border-radius: 4px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.2s ease;
+  flex-shrink: 0;
+}
+
+.distribution-checkbox-chip:hover {
+  background: rgba(255, 255, 255, 0.1);
+  border-color: rgba(255, 255, 255, 0.32);
+  color: var(--text-primary);
+}
+
+.distribution-checkbox-chip.active {
+  background: rgba(37, 99, 235, 0.25);
+  border-color: #3b82f6;
+  color: #ffffff;
+  box-shadow: 0 2px 8px rgba(37, 99, 235, 0.25);
+}
+
+.distribution-checkbox-chip.active .checkbox-custom {
+  background: #2563eb;
+  border-color: #2563eb;
+}
+
+.distribution-checkbox-chip.active .checkbox-custom::after {
+  content: '✓';
+  color: #ffffff;
+  font-size: 10px;
+  font-weight: bold;
 }
 
 .term-range-field {
@@ -869,6 +1014,13 @@ body {
 
 .card-meta .crn {
   color: var(--text-tertiary);
+  font-weight: 600;
+}
+
+.card-meta .distribution-badge {
+  background: rgba(37, 99, 235, 0.2);
+  color: #93c5fd;
+  border: 1px solid rgba(59, 130, 246, 0.4);
   font-weight: 600;
 }
 
@@ -1666,5 +1818,56 @@ body {
     font-size: 0.72rem;
     align-self: flex-end;
     margin-left: 0;
+  }
+
+  .distribution-filter-row {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 12px;
+  }
+
+  .distribution-group-select-wrap,
+  .distribution-ad-wrap {
+    width: 100%;
+    flex: 1 1 100%;
+  }
+
+  .distribution-chip-btn {
+    padding: 6px 4px;
+    font-size: 0.76rem;
+  }
+
+  .distribution-checkbox-chip {
+    width: 100%;
+    justify-content: flex-start;
+  }
+}
+
+@media (max-width: 480px) {
+  .app {
+    padding: 6px 8px;
+  }
+
+  .container {
+    padding: 0 8px;
+  }
+
+  .search-section {
+    padding: 12px 10px;
+  }
+
+  .distribution-chips-group {
+    border-radius: 14px;
+    padding: 2px;
+  }
+
+  .distribution-chip-btn {
+    font-size: 0.72rem;
+    padding: 5px 2px;
+  }
+
+  .distribution-checkbox-chip {
+    font-size: 0.78rem;
+    padding: 6px 10px;
   }
 }

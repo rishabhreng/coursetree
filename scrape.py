@@ -141,10 +141,6 @@ def get_all_courses_for_term(term_code: str, sql_db_path=None) -> DataFrame:
                 for time in course.find("end-time").text.split(", ")
             ]
 
-            assert len(meeting_days) == len(_start_time) == len(_end_time), (
-                f"Meeting days, start times, and end times must have the same length for course {crn}"
-            )
-
             if len(meeting_days) == 1:
                 meeting_days[0] = f"{_start_time[0]}-{_end_time[0]} {meeting_days[0]}"
             else:
@@ -176,7 +172,6 @@ def get_all_courses_for_term(term_code: str, sql_db_path=None) -> DataFrame:
                 "prerequisites": prerequisites,
                 "distribution": distribution,
                 "credits": credits,
-                "course_page": course_page,
             }
         )
 

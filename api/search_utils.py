@@ -17,6 +17,7 @@ class Course(BaseModel):
     meeting_times: Optional[str] = None
     credits: Optional[str] = None
     course_page: Optional[str] = None
+    distribution: Optional[str] = None
 
 
 class Term(BaseModel):
@@ -82,6 +83,7 @@ def row_to_course(row: sql.Row) -> Course:
         "meeting_times": row_dict.get("meeting_times"),
         "credits": row_dict.get("credits"),
         "course_page": row_dict.get("course_page"),
+        "distribution": row_dict.get("distribution"),
     }
     return Course(**data)
 

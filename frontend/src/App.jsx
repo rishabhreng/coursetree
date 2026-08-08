@@ -198,6 +198,13 @@ function TermSelect({ id, value, onChange, options, placeholder = "Select term" 
   )
 }
 
+const DISTRIBUTION_OPTIONS = [
+  'Analyzing Diversity Course',
+  'Distribution Group I',
+  'Distribution Group II',
+  'Distribution Group III',
+]
+
 function App() {
   const [clientId] = useState(() => getOrCreateClientId())
   const [query, setQuery] = useState('')
@@ -205,6 +212,10 @@ function App() {
   const [termEnd, setTermEnd] = useState('all')
   const [termStartText, setTermStartText] = useState('')
   const [termEndText, setTermEndText] = useState('')
+  const [distributionGroup, setDistributionGroup] = useState('all')
+  const [analyzingDiversity, setAnalyzingDiversity] = useState(false)
+  const [lastDistributionGroup, setLastDistributionGroup] = useState('all')
+  const [lastAnalyzingDiversity, setLastAnalyzingDiversity] = useState(false)
   const [terms, setTerms] = useState([])
   const [subjects, setSubjects] = useState([])
   const [results, setResults] = useState({})
@@ -422,7 +433,8 @@ function App() {
   }
 
   const doSearch = useCallback(async () => {
-    if (!query.trim()) {
+    const hasDistFilter = (distributionGroup && distributionGroup !== 'all') || analyzingDiversity
+    if (!query.trim() && !hasDistFilter) {
       setResults({})
       setHasMore(false)
       setCurrentOffset(0)
@@ -445,6 +457,12 @@ function App() {
       if (termEnd && termEnd !== 'all') {
         searchParams.set('term_end', termEnd)
       }
+      if (distributionGroup && distributionGroup !== 'all') {
+        searchParams.set('distribution_group', distributionGroup)
+      }
+      if (analyzingDiversity) {
+        searchParams.set('analyzing_diversity', 'true')
+      }
 
       const res = await apiFetch(`/api/courses/?${searchParams.toString()}`)
       if (!res.ok) throw new Error(`Search failed ${res.status}`)
@@ -461,15 +479,18 @@ function App() {
       setLastQuery(query.trim())
       setLastTermStart(termStart)
       setLastTermEnd(termEnd)
+      setLastDistributionGroup(distributionGroup)
+      setLastAnalyzingDiversity(analyzingDiversity)
     } catch (err) {
       setError(err.message ?? 'Unable to fetch')
     } finally {
       setLoading(false)
     }
-  }, [apiFetch, query, termStart, termEnd])
+  }, [apiFetch, query, termStart, termEnd, distributionGroup, analyzingDiversity])
 
   const loadMore = async () => {
-    if (!lastQuery) return
+    const hasLastDistFilter = (lastDistributionGroup && lastDistributionGroup !== 'all') || lastAnalyzingDiversity
+    if (!lastQuery && !hasLastDistFilter) return
 
     setLoadingMore(true)
     setError(null)
@@ -486,6 +507,12 @@ function App() {
       }
       if (lastTermEnd && lastTermEnd !== 'all') {
         searchParams.set('term_end', lastTermEnd)
+      }
+      if (lastDistributionGroup && lastDistributionGroup !== 'all') {
+        searchParams.set('distribution_group', lastDistributionGroup)
+      }
+      if (lastAnalyzingDiversity) {
+        searchParams.set('analyzing_diversity', 'true')
       }
 
       const res = await apiFetch(`/api/courses/?${searchParams.toString()}`)
@@ -530,8 +557,9 @@ function App() {
     if (!trimmed || trimmed.toUpperCase() === 'TBA') return
 
     const priorQuery = query.trim()
-    if (priorQuery || termStart !== 'all' || termEnd !== 'all') {
-      setPreviousSearch({ query: priorQuery, termStart, termEnd })
+    const hasDistFilter = (distributionGroup && distributionGroup !== 'all') || analyzingDiversity
+    if (priorQuery || termStart !== 'all' || termEnd !== 'all' || hasDistFilter) {
+      setPreviousSearch({ query: priorQuery, termStart, termEnd, distributionGroup, analyzingDiversity })
     }
 
     setQuery(trimmed)
@@ -543,6 +571,8 @@ function App() {
     setQuery(previousSearch.query || '')
     setTermStart(previousSearch.termStart || 'all')
     setTermEnd(previousSearch.termEnd || 'all')
+    setDistributionGroup(previousSearch.distributionGroup || 'all')
+    setAnalyzingDiversity(Boolean(previousSearch.analyzingDiversity))
     setPreviousSearch(null)
     window.scrollTo({ top: 0, behavior: 'smooth' })
   }
@@ -1233,8 +1263,52 @@ function App() {
             </div>
           </div>
 
+          <div className="distribution-filters-container">
+            <div className="distribution-filter-row">
+              <div className="distribution-group-select-wrap">
+                <label className="distribution-filters-label">Distribution Group</label>
+                <div className="distribution-chips-group">
+                  {[
+                    { code: 'all', label: 'All Groups' },
+                    { code: 'Distribution Group I', label: 'Group I' },
+                    { code: 'Distribution Group II', label: 'Group II' },
+                    { code: 'Distribution Group III', label: 'Group III' },
+                  ].map((opt) => (
+                    <button
+                      key={opt.code}
+                      type="button"
+                      className={`distribution-chip-btn ${distributionGroup === opt.code ? 'active' : ''}`}
+                      onClick={() => {
+                        if (previousSearch) setPreviousSearch(null)
+                        setDistributionGroup(opt.code)
+                      }}
+                    >
+                      {opt.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <div className="distribution-ad-wrap">
+                <label className="distribution-filters-label">Diversity Requirement</label>
+                <label className={`distribution-checkbox-chip ${analyzingDiversity ? 'active' : ''}`}>
+                  <input
+                    type="checkbox"
+                    checked={analyzingDiversity}
+                    onChange={(e) => {
+                      if (previousSearch) setPreviousSearch(null)
+                      setAnalyzingDiversity(e.target.checked)
+                    }}
+                  />
+                  <span className="checkbox-custom"></span>
+                  <span className="checkbox-label">Analyzing Diversity Course</span>
+                </label>
+              </div>
+            </div>
+          </div>
+
           {error && <p className="status error">❌ {error}</p>}
-          {!loading && courseEntries.length === 0 && query && !error && (
+          {!loading && courseEntries.length === 0 && (query || (distributionGroup && distributionGroup !== 'all') || analyzingDiversity) && !error && (
             <p className="status empty">No courses found for your search</p>
           )}
         </section>
@@ -1272,7 +1346,7 @@ function App() {
                       const syllabusState = syllabusLookup[getSyllabusKey(course)]
                       const evaluationState = evaluationLookup[getEvaluationKey(course)]
                       const instructorEvalState = instructorEvalLookup[getInstructorEvalKey(course)]
-                      const coursePageUrl = course.course_page || `https://courses.rice.edu/courses/courses/!SWKSCAT.cat?p_action=COURSE&p_term=${course.term}&p_crn=${course.crn}`
+                      const coursePageUrl = `https://courses.rice.edu/courses/courses/!SWKSCAT.cat?p_action=COURSE&p_term=${course.term}&p_crn=${course.crn}`
                       const authRequired = [syllabusState, evaluationState, instructorEvalState].some(
                         (state) => state?.status === 'none' && state?.message === ESTHER_AUTH_REQUIRED_MESSAGE
                       )
@@ -1286,6 +1360,7 @@ function App() {
                             <span className="term">{getTermLabel(course.term)}</span>
                             <span className="crn">CRN: {course.crn}</span>
                             {course.credits && <span className="credits">{course.credits} {parseInt(course.credits) === 1 && !course.credits.includes(' ') ? 'CREDIT' : 'CREDITS'}</span>}
+                            {course.distribution && <span className="distribution-badge">{course.distribution}</span>}
                           </div>
 
                           <div className="course-details">
