@@ -874,15 +874,12 @@ function App() {
                       <XAxis
                         dataKey="name"
                         angle={-35}
-                        angle={-35}
                         textAnchor="end"
-                        height={70}
+                        height={65}
                         interval={0}
-                        tick={{ fill: '#E8E8E8', fontSize: 11, fontWeight: 500 }}
-                        tick={{ fill: '#E8E8E8', fontSize: 11, fontWeight: 500 }}
+                        tick={{ fill: '#E8E8E8', fontSize: 10, fontWeight: 500 }}
                       />
-                      <YAxis tick={{ fill: '#E8E8E8', fontSize: 11 }} />
-                      <YAxis tick={{ fill: '#E8E8E8', fontSize: 11 }} />
+                      <YAxis tick={{ fill: '#E8E8E8', fontSize: 10 }} />
                       <Tooltip
                         isAnimationActive={false}
                         content={({ active, payload }) => {

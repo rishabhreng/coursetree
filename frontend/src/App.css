@@ -1257,7 +1257,7 @@ body {
   background: rgba(168, 85, 247, 0.08);
   border: 1px solid rgba(168, 85, 247, 0.3);
   border-radius: 6px;
-  max-height: 600px;
+  max-height: 750px;
   overflow-y: auto;
 }
 
@@ -1329,7 +1329,7 @@ body {
   background: rgba(245, 158, 11, 0.06);
   border: 1px solid rgba(245, 158, 11, 0.3);
   border-radius: 6px;
-  max-height: 600px;
+  max-height: 750px;
   overflow-y: auto;
 }
 
@@ -1602,18 +1602,26 @@ body {
 
 .charts-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+  grid-template-columns: repeat(4, 1fr);
   gap: 10px;
 }
 
 .charts-grid.charts-grid-3x3 {
-  grid-template-columns: repeat(3, 1fr);
+  grid-template-columns: repeat(4, 1fr);
   gap: 10px;
 }
 
-@media (max-width: 1024px) {
+@media (max-width: 1280px) {
+  .charts-grid,
   .charts-grid.charts-grid-3x3 {
-    grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+    grid-template-columns: repeat(3, 1fr);
+  }
+}
+
+@media (max-width: 1024px) {
+  .charts-grid,
+  .charts-grid.charts-grid-3x3 {
+    grid-template-columns: repeat(2, 1fr);
   }
 }
 
