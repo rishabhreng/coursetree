@@ -332,7 +332,7 @@ async def get_syllabus(
                 return SyllabusResponse(syllabus_url=None, message="No syllabus posted for this term")
         except Exception as e:
             print(f"[ERROR] Could not check syllabus metadata: {str(e)}")
-            return SyllabusResponse(syllabus_url=None, message="No syllabus posted")
+            return SyllabusResponse(syllabus_url=None, message="No syllabus posted for this term")
 
         try:
             session = await ensure_authenticated_session(client_id)

@@ -1141,7 +1141,7 @@ function App() {
           ...prev,
           [key]: {
             status: 'none',
-            message: data.message || 'No syllabus posted',
+            message: data.message || 'No syllabus posted for this term',
           },
         }))
       }
