@@ -5,7 +5,7 @@ import { Analytics } from '@vercel/analytics/react';
 import { SpeedInsights } from '@vercel/speed-insights/react';
 
 const DEFAULT_TERM_CODE = '202710'
-const PAGE_SIZE = 10
+const PAGE_SIZE = 20
 const API_BASE_URL = import.meta.env.VITE_API_URL
   || (import.meta.env.DEV ? 'http://localhost:8000' : 'https://api-ricecourses.duckdns.org')
 const ESTHER_AUTH_REQUIRED_MESSAGE = 'ESTHER login required. Use the Login to ESTHER button.'
@@ -244,6 +244,8 @@ function App() {
   const [authError, setAuthError] = useState(null)
   const searchInputRef = useRef(null)
   const syllabusLookupRef = useRef({})
+  const activeSearchControllerRef = useRef(null)
+  const searchIdRef = useRef(0)
 
   const apiFetch = useCallback((path, options = {}) => {
     const headers = new Headers(options.headers || {})
@@ -433,22 +435,34 @@ function App() {
   }
 
   const doSearch = useCallback(async () => {
+    const trimmedQuery = query.trim()
     const hasDistFilter = (distributionGroup && distributionGroup !== 'all') || analyzingDiversity
-    if (!query.trim() && !hasDistFilter) {
+    if (!trimmedQuery && !hasDistFilter) {
+      if (activeSearchControllerRef.current) {
+        activeSearchControllerRef.current.abort()
+        activeSearchControllerRef.current = null
+      }
       setResults({})
       setHasMore(false)
       setCurrentOffset(0)
+      setLoading(false)
       return
     }
+
+    if (activeSearchControllerRef.current) {
+      activeSearchControllerRef.current.abort()
+    }
+
+    const controller = new AbortController()
+    activeSearchControllerRef.current = controller
+    const currentSearchId = ++searchIdRef.current
 
     setLoading(true)
     setError(null)
 
     try {
       const searchParams = new URLSearchParams({
-        q: query.trim(),
-        offset: '0',
-        top_n_results: String(PAGE_SIZE),
+        q: trimmedQuery,
         term_code: 'all',
       })
       if (termStart && termStart !== 'all') {
@@ -464,9 +478,15 @@ function App() {
         searchParams.set('analyzing_diversity', 'true')
       }
 
-      const res = await apiFetch(`/api/courses/?${searchParams.toString()}`)
+      const res = await apiFetch(`/api/courses/?${searchParams.toString()}`, {
+        signal: controller.signal,
+      })
       if (!res.ok) throw new Error(`Search failed ${res.status}`)
       const json = await res.json()
+
+      if (currentSearchId !== searchIdRef.current) {
+        return
+      }
 
       const normalized = normalizeResults(json)
       setResults(normalized)
@@ -474,17 +494,24 @@ function App() {
       setSyllabusLookup({})
 
       const uniqueCourses = Object.keys(normalized).length
-      setHasMore(uniqueCourses === PAGE_SIZE)
+      setHasMore(false)
       setCurrentOffset(uniqueCourses)
-      setLastQuery(query.trim())
+      setLastQuery(trimmedQuery)
       setLastTermStart(termStart)
       setLastTermEnd(termEnd)
       setLastDistributionGroup(distributionGroup)
       setLastAnalyzingDiversity(analyzingDiversity)
     } catch (err) {
-      setError(err.message ?? 'Unable to fetch')
+      if (err.name === 'AbortError') {
+        return
+      }
+      if (currentSearchId === searchIdRef.current) {
+        setError(err.message ?? 'Unable to fetch')
+      }
     } finally {
-      setLoading(false)
+      if (currentSearchId === searchIdRef.current) {
+        setLoading(false)
+      }
     }
   }, [apiFetch, query, termStart, termEnd, distributionGroup, analyzingDiversity])
 
@@ -533,7 +560,7 @@ function App() {
       setResults(mergedResults)
 
       const uniqueNewCourses = Object.keys(newResults).length
-      setHasMore(uniqueNewCourses === PAGE_SIZE)
+      setHasMore(uniqueNewCourses >= PAGE_SIZE)
       setCurrentOffset((prev) => prev + uniqueNewCourses)
     } catch (err) {
       setError(err.message ?? 'Unable to fetch more')

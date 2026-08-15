@@ -50,7 +50,6 @@ app = FastAPI()
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
-        # "http://localhost:3000",
         "http://localhost:5173",  # local frontend dev
         "https://ricecourses.vercel.app",  # deployed frontend
     ],
@@ -102,7 +101,7 @@ def search_courses(
     term_code: str = DEFAULT_COURSE_TERM_CODE,
     term_start: Optional[str] = None,
     term_end: Optional[str] = None,
-    top_n_results: int = 50,
+    top_n_results: Optional[int] = None,
     offset: int = 0,
     db: sql.Connection = Depends(get_db),
 ) -> CoursesResponse:
@@ -206,7 +205,13 @@ def search_courses(
             secondary_sort = "best_search_rank ASC"
             cte_params = []
 
-        # 3. Build the universal CTE query
+        if top_n_results is not None and top_n_results > 0:
+            rank_filter = "WHERE course_rank > ? AND course_rank <= ?"
+            pagination_params = [offset, offset + top_n_results]
+        else:
+            rank_filter = "WHERE course_rank > ?"
+            pagination_params = [offset]
+
         sql_query = f"""
             WITH RawFTS AS (
                 SELECT *, 
@@ -231,18 +236,19 @@ def search_courses(
                                -- Primary Sort: Rolling 2-year tiers
                                ((global_max_term - course_max_term) / 200) ASC, 
                                -- Secondary Sort: Injected based on search type
-                               {secondary_sort}
+                               {secondary_sort},
+                               crs ASC
                        ) as course_rank
                 FROM CourseStats
             )
-            -- 4. Select and paginate based on the unique course rank
+            -- 4. Select based on the unique course rank
             SELECT * FROM RankedCourses
-            WHERE course_rank > ? AND course_rank <= ?
+            {rank_filter}
             ORDER BY course_rank ASC, term DESC
         """
 
         # Parameter binding order strictly follows the '?' placeholders in the query
-        params = base_params + cte_params + [offset, offset + top_n_results]
+        params = base_params + cte_params + pagination_params
 
         # 5. Execute and return
         rows = db.cursor().execute(sql_query, tuple(params)).fetchall()
@@ -323,7 +329,7 @@ async def get_syllabus(
 
             metadata = ET.fromstring(metadata_response.text)
             if metadata.attrib.get("has-syllabus") != "yes":
-                return SyllabusResponse(syllabus_url=None, message="No syllabus posted")
+                return SyllabusResponse(syllabus_url=None, message="No syllabus posted for this term")
         except Exception as e:
             print(f"[ERROR] Could not check syllabus metadata: {str(e)}")
             return SyllabusResponse(syllabus_url=None, message="No syllabus posted")
