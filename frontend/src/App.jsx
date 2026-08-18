@@ -196,7 +196,6 @@ function App() {
   const [lastDistributionGroup, setLastDistributionGroup] = useState('all')
   const [lastAnalyzingDiversity, setLastAnalyzingDiversity] = useState(false)
   const [terms, setTerms] = useState([])
-  const [subjects, setSubjects] = useState([])
   const [results, setResults] = useState({})
   const [loading, setLoading] = useState(false)
   const [loadingMore, setLoadingMore] = useState(false)
@@ -250,19 +249,7 @@ function App() {
       }
     }
 
-    const fetchSubjects = async () => {
-      try {
-        const res = await apiFetch('/api/subjects')
-        if (!res.ok) throw new Error(`Failed to fetch subjects: ${res.status}`)
-        const data = await res.json()
-        setSubjects(Array.isArray(data) ? data : [])
-      } catch (err) {
-        console.error('Error fetching subjects:', err)
-      }
-    }
-
     fetchTerms()
-    fetchSubjects()
   }, [apiFetch])
 
   const termOptions = useMemo(() => {
@@ -594,6 +581,7 @@ function App() {
   }
 
   const handleCourseEvalClick = (course) => {
+    setActiveSyllabusKey(null)
     const evalKey = getEvaluationKey(course)
     const instrKey = getInstructorEvalKey(course)
 
@@ -628,6 +616,7 @@ function App() {
   }
 
   const handleInstructorEvalClick = (course) => {
+    setActiveSyllabusKey(null)
     const evalKey = getEvaluationKey(course)
     const instrKey = getInstructorEvalKey(course)
 
@@ -1134,33 +1123,6 @@ function App() {
                     Type CRN (12345), CRS (ABCD 123), course title (Intro to Life I), instructor (John Doe), or any combination.
                   </div>
                 </div>
-                {/* <div className="tooltip-wrap">
-                  <button
-                    type="button"
-                    className="tooltip-trigger subjects-info-btn"
-                    aria-label="Subject codes reference"
-                    aria-describedby="subjects-tooltip"
-                  >
-                    ⊕
-                  </button>
-                  <div id="subjects-tooltip" role="tooltip" className="tooltip-text subjects-tooltip">
-                    <strong>Subject Codes:</strong>
-                    <div className="subject-codes-list">
-                      {subjects.map((subject) => (
-                        <div
-                          key={subject.code}
-                          className="subject-code-item"
-                          onClick={() => {
-                            handleSubjectClick(subject.code)
-                          }}
-                        >
-                          <span className="code">{subject.code}</span>
-                          <span className="meaning">{subject.subject}</span>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                </div> */}
               </div>
               <input
                 id="query"

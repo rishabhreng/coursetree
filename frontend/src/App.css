@@ -353,7 +353,15 @@ body {
   position: relative;
   display: inline-flex;
   align-items: center;
-  padding-bottom: 10px;
+}
+
+.tooltip-wrap::after {
+  content: '';
+  position: absolute;
+  top: 100%;
+  left: 0;
+  width: 100%;
+  height: 10px;
 }
 
 .tooltip-wrap::before {
