@@ -1485,21 +1485,21 @@ function App() {
                                         )}
                                         {(!isSingleInstructor ? !isCollapsed : true) && (
                                           <div className="instructor-eval-sections">
-                                            {(!result.sections || result.sections.length === 0) && (
+                                            {(!result.html && (!result.charts || result.charts.length === 0)) && (
                                               <p className="evaluation-status neutral">{result.message || 'No evaluation data found'}</p>
                                             )}
-                                            {result.sections?.map((section, idx) => (
-                                              <div key={`${instructorKey}-${idx}`} className="instructor-eval-section">
-                                                {renderCharts(section.charts, true)}
+                                            {(result.html || (result.charts && result.charts.length > 0)) && (
+                                              <div className="instructor-eval-section">
+                                                {renderCharts(result.charts, true)}
                                                 <div className="comments-section">
                                                   <div
                                                     dangerouslySetInnerHTML={{
-                                                      __html: formatEvalHtml(section.html),
+                                                      __html: formatEvalHtml(result.html),
                                                     }}
                                                   />
                                                 </div>
                                               </div>
-                                            ))}
+                                            )}
                                           </div>
                                         )}
                                       </div>

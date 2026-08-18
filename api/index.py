@@ -395,105 +395,44 @@ def get_instructor_evaluation(
     Fetch instructor evaluations. Returns cached data if available.
     """
     clean_term = (term or term_code or "").replace("courses_", "")
-    if not clean_term or not crn or not instructor_names:
-        return {"success": False, "message": "Missing term, crn or instructor_names"}
+    if not clean_term or not crn:
+        return {"success": False, "message": "Missing term or crn"}
 
     try:
-        # 1. Resolve instructor names to instructor IDs using main.db
-        names_to_lookup = [n.strip() for n in instructor_names.split("|") if n.strip()]
-        resolved_ids = []
-        missing_instructors = []
+        cur_evals = evals_db.cursor()
+        cur_evals.execute(
+            "SELECT instructor_name, instructor_id, html, charts_json FROM instructor_evaluations WHERE term = ? AND crn = ?",
+            (clean_term, crn)
+        )
+        rows = cur_evals.fetchall()
         
-        cur_main = db.cursor()
-        try:
-            cur_main.execute(f"SELECT name, id FROM instructors_{clean_term}")
-            db_instructors = cur_main.fetchall()
-            
-            # Build comprehensive name_to_id map
-            name_to_id = {}
-            for db_name, ins_id in db_instructors:
-                if not db_name or not ins_id:
-                    continue
-                db_name_clean = db_name.strip()
-                name_to_id[db_name_clean.lower()] = str(ins_id)
-                parts = [p.strip() for p in db_name_clean.split(",") if p.strip()]
-                if len(parts) >= 2:
-                    last, first = parts[0], parts[1]
-                    first_only = first.split()[0] if first else ""
-                    name_to_id[f"{first} {last}".lower()] = str(ins_id)
-                    name_to_id[f"{first_only} {last}".lower()] = str(ins_id)
-                    name_to_id[f"{last}, {first}".lower()] = str(ins_id)
-                    name_to_id[f"{last}, {first_only}".lower()] = str(ins_id)
-                    name_to_id[f"{last} {first}".lower()] = str(ins_id)
-                else:
-                    name_to_id[db_name_clean.lower()] = str(ins_id)
-            
-            for instr in names_to_lookup:
-                instr_clean = instr.strip()
-                if not instr_clean:
-                    continue
-                instr_lower = instr_clean.lower()
-                iid = name_to_id.get(instr_lower)
-                if not iid and "," in instr_clean:
-                    parts = [p.strip() for p in instr_clean.split(",") if p.strip()]
-                    if len(parts) >= 2:
-                        last, first = parts[0], parts[1]
-                        iid = name_to_id.get(f"{first} {last}".lower()) or name_to_id.get(f"{last}, {first}".lower()) or name_to_id.get(last.lower())
-                if not iid:
-                    # Token subset match
-                    instr_tokens = set(re.findall(r"\w+", instr_lower))
-                    if instr_tokens:
-                        for db_k, v in name_to_id.items():
-                            db_tokens = set(re.findall(r"\w+", db_k))
-                            if instr_tokens.issubset(db_tokens) or db_tokens.issubset(instr_tokens):
-                                iid = v
-                                break
-                if iid:
-                    resolved_ids.append((instr_clean, iid))
-                else:
-                    missing_instructors.append(instr_clean)
-                    
-        except sql.OperationalError:
-            pass # Table might not exist
+        results = []
+        for row in rows:
+            charts_data = json.loads(row["charts_json"]) if row["charts_json"] else []
+            results.append({
+                "instructor_name": row["instructor_name"],
+                "instructor_id": row["instructor_id"],
+                "html": row["html"],
+                "charts": charts_data
+            })
 
-        if not resolved_ids:
+        if not results:
             return {
                 "success": False,
                 "term": clean_term,
                 "crn": crn,
                 "results": [],
-                "missing_instructors": missing_instructors,
-                "message": "Could not map any instructors to their IDs",
+                "missing_instructors": [],
+                "message": "No instructor evaluations found for this course",
             }
 
-        # 2. Fetch evaluation data for the resolved instructor IDs from evals.db
-        cur_evals = evals_db.cursor()
-        results = []
-        
-        for instr_name, instr_id in resolved_ids:
-            cur_evals.execute(
-                "SELECT html, charts_json FROM instructor_evaluations WHERE term = ? AND crn = ? AND instructor_id = ?",
-                (clean_term, crn, instr_id)
-            )
-            row = cur_evals.fetchone()
-            if row:
-                charts_data = json.loads(row["charts_json"]) if row["charts_json"] else []
-                results.append({
-                    "instructor_name": instr_name,
-                    "instructor_id": instr_id,
-                    "html": row["html"],
-                    "charts": charts_data
-                })
-            else:
-                missing_instructors.append(instr_name)
-
         return {
-            "success": len(results) > 0,
+            "success": True,
             "term": term,
             "crn": crn,
             "results": results,
-            "missing_instructors": missing_instructors,
-            "message": "Instructor evaluations loaded" if results else "No evaluation data found for resolved instructors"
+            "missing_instructors": [],
+            "message": "Instructor evaluations loaded"
         }
 
     except Exception as e:
