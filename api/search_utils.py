@@ -32,6 +32,8 @@ class Subject(BaseModel):
 
 class SyllabusResponse(BaseModel):
     syllabus_url: Optional[str] = None
+    file_type: Optional[str] = None
+    filename: Optional[str] = None
     message: str
 
 

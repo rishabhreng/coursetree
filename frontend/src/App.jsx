@@ -8,26 +8,6 @@ const DEFAULT_TERM_CODE = '202710'
 const PAGE_SIZE = 20
 const API_BASE_URL = import.meta.env.VITE_API_URL
   || (import.meta.env.DEV ? 'http://localhost:8000' : 'https://api-ricecourses.duckdns.org')
-const ESTHER_AUTH_REQUIRED_MESSAGE = 'ESTHER login required. Use the Login to ESTHER button.'
-const ESTHER_CLIENT_ID_KEY = 'coursetree-esther-client-id'
-
-const getOrCreateClientId = () => {
-  if (typeof window === 'undefined') {
-    return 'server'
-  }
-
-  const existing = window.localStorage.getItem(ESTHER_CLIENT_ID_KEY)
-  if (existing) {
-    return existing
-  }
-
-  const generated = typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
-    ? crypto.randomUUID()
-    : `client-${Date.now()}-${Math.random().toString(36).slice(2)}`
-
-  window.localStorage.setItem(ESTHER_CLIENT_ID_KEY, generated)
-  return generated
-}
 
 function TermSelect({ id, value, onChange, options, placeholder = "Select term" }) {
   const [isOpen, setIsOpen] = useState(false)
@@ -206,7 +186,6 @@ const DISTRIBUTION_OPTIONS = [
 ]
 
 function App() {
-  const [clientId] = useState(() => getOrCreateClientId())
   const [query, setQuery] = useState('')
   const [termStart, setTermStart] = useState('all')
   const [termEnd, setTermEnd] = useState('all')
@@ -236,44 +215,14 @@ function App() {
   const [lastTermEnd, setLastTermEnd] = useState('all')
   const [previousSearch, setPreviousSearch] = useState(null)
   const [activeSyllabusKey, setActiveSyllabusKey] = useState(null)
-  const [estherAuthState, setEstherAuthState] = useState('checking')
-  const [showAuthModal, setShowAuthModal] = useState(false)
-  const [netid, setNetid] = useState('')
-  const [password, setPassword] = useState('')
-  const [authLoading, setAuthLoading] = useState(false)
-  const [authError, setAuthError] = useState(null)
   const searchInputRef = useRef(null)
   const syllabusLookupRef = useRef({})
   const activeSearchControllerRef = useRef(null)
   const searchIdRef = useRef(0)
 
   const apiFetch = useCallback((path, options = {}) => {
-    const headers = new Headers(options.headers || {})
-    headers.set('X-Client-Id', clientId)
-    return fetch(`${API_BASE_URL}${path}`, {
-      ...options,
-      headers,
-    })
-  }, [clientId])
-
-  useEffect(() => {
-    const fetchAuthStatus = async () => {
-      try {
-        const res = await apiFetch('/api/auth/status')
-        if (!res.ok) {
-          throw new Error(`Auth status failed ${res.status}`)
-        }
-
-        const data = await res.json()
-        setEstherAuthState(data.authenticated ? 'authenticated' : 'unauthenticated')
-      } catch (err) {
-        console.error('Error checking ESTHER auth status:', err)
-        setEstherAuthState('unauthenticated')
-      }
-    }
-
-    fetchAuthStatus()
-  }, [apiFetch])
+    return fetch(`${API_BASE_URL}${path}`, options)
+  }, [])
 
   useEffect(() => {
     const handleShortcut = (event) => {
@@ -288,34 +237,6 @@ function App() {
     window.addEventListener('keydown', handleShortcut)
     return () => window.removeEventListener('keydown', handleShortcut)
   }, [])
-
-  const handleAuthSubmit = async (e) => {
-    e.preventDefault();
-    setAuthLoading(true);
-    setAuthError(null);
-
-    try {
-      const res = await apiFetch('/api/auth', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ netid, password })
-      });
-
-      if (!res.ok) {
-        const errorBody = await res.json().catch(() => null)
-        throw new Error(errorBody?.detail || 'Login failed or Duo push was denied.')
-      }
-
-      setEstherAuthState('authenticated')
-      setShowAuthModal(false);
-      setPassword('')
-
-    } catch (err) {
-      setAuthError(err.message);
-    } finally {
-      setAuthLoading(false);
-    }
-  };
 
   useEffect(() => {
     const fetchTerms = async () => {
@@ -942,7 +863,8 @@ function App() {
 
     try {
       const subject = course.crs ? course.crs.split(' ')[0] : ''
-      const params = new URLSearchParams({ term: course.term, crn: course.crn, subject })
+      const courseCode = course.crs || ''
+      const params = new URLSearchParams({ term: course.term, crn: course.crn, subject, course_code: courseCode })
       const res = await apiFetch(`/api/evaluate?${params.toString()}`)
 
       if (!res.ok) {
@@ -970,21 +892,13 @@ function App() {
         }))
       }
     } catch (err) {
-      if (err.message.includes('401') || err.message.includes('403')) {
-        setEstherAuthState('unauthenticated')
-        setEvaluationLookup((prev) => ({
-          ...prev,
-          [key]: { status: 'none', message: ESTHER_AUTH_REQUIRED_MESSAGE },
-        }));
-      } else {
-        setEvaluationLookup((prev) => ({
-          ...prev,
-          [key]: {
-            status: 'error',
-            message: err.message || 'Unable to fetch evaluation',
-          },
-        }))
-      }
+      setEvaluationLookup((prev) => ({
+        ...prev,
+        [key]: {
+          status: 'error',
+          message: err.message || 'Unable to fetch evaluation',
+        },
+      }))
     }
   }
 
@@ -1040,21 +954,13 @@ function App() {
         }))
       }
     } catch (err) {
-      if (err.message.includes('401') || err.message.includes('403')) {
-        setEstherAuthState('unauthenticated')
-        setInstructorEvalLookup((prev) => ({
-          ...prev,
-          [key]: { status: 'none', message: ESTHER_AUTH_REQUIRED_MESSAGE },
-        }));
-      } else {
-        setInstructorEvalLookup((prev) => ({
-          ...prev,
-          [key]: {
-            status: 'error',
-            message: err.message || 'Unable to fetch instructor evaluations',
-          },
-        }))
-      }
+      setInstructorEvalLookup((prev) => ({
+        ...prev,
+        [key]: {
+          status: 'error',
+          message: err.message || 'Unable to fetch instructor evaluations',
+        },
+      }))
     }
   }
 
@@ -1096,6 +1002,7 @@ function App() {
               status: 'available',
               message: 'Syllabus available',
               url: pdfUrl,
+              fileType: 'pdf',
               blobUrl: true,
             },
           }
@@ -1110,13 +1017,37 @@ function App() {
         const syllabusUrl = data.syllabus_url.startsWith('http')
           ? data.syllabus_url
           : `${API_BASE_URL}${data.syllabus_url}`
-        const pdfRes = await fetch(syllabusUrl)
-        if (!pdfRes.ok) {
-          throw new Error(`Failed to fetch PDF: ${pdfRes.status}`)
+
+        const fileType = (data.file_type || '').toLowerCase()
+
+        // If it's a text syllabus, fetch text content directly for in-app viewing
+        if (fileType === 'txt') {
+          const textRes = await fetch(syllabusUrl)
+          const textContent = await textRes.text()
+
+          setSyllabusLookup((prev) => ({
+            ...prev,
+            [key]: {
+              status: 'available',
+              message: 'Syllabus available',
+              textContent: textContent,
+              fileType: 'txt',
+              url: syllabusUrl,
+              filename: data.filename,
+            },
+          }))
+          setActiveSyllabusKey(key)
+          return
         }
 
-        const pdfBlob = await pdfRes.blob()
-        const pdfUrl = URL.createObjectURL(pdfBlob)
+        // For PDF or general files, fetch as blob for iframe viewer or direct download
+        const fileRes = await fetch(syllabusUrl)
+        if (!fileRes.ok) {
+          throw new Error(`Failed to fetch syllabus document: ${fileRes.status}`)
+        }
+
+        const fileBlob = await fileRes.blob()
+        const objectUrl = URL.createObjectURL(fileBlob)
 
         setSyllabusLookup((prev) => {
           const prior = prev[key]
@@ -1129,7 +1060,10 @@ function App() {
             [key]: {
               status: 'available',
               message: data.message || 'Syllabus available',
-              url: pdfUrl,
+              url: objectUrl,
+              downloadUrl: syllabusUrl,
+              fileType: fileType || (data.filename?.endsWith('.docx') ? 'docx' : 'pdf'),
+              filename: data.filename,
               blobUrl: true,
             },
           }
@@ -1146,21 +1080,13 @@ function App() {
         }))
       }
     } catch (err) {
-      if (err.message.includes('401') || err.message.includes('403')) {
-        setEstherAuthState('unauthenticated')
-        setSyllabusLookup((prev) => ({
-          ...prev,
-          [key]: { status: 'none', message: ESTHER_AUTH_REQUIRED_MESSAGE },
-        }));
-      } else {
-        setSyllabusLookup((prev) => ({
-          ...prev,
-          [key]: {
-            status: 'error',
-            message: err.message || 'Unable to fetch syllabus',
-          },
-        }))
-      }
+      setSyllabusLookup((prev) => ({
+        ...prev,
+        [key]: {
+          status: 'error',
+          message: err.message || 'Unable to fetch syllabus',
+        },
+      }))
     }
   }
 
@@ -1173,18 +1099,6 @@ function App() {
           <div className="header-copy">
             <h1>Rice Course Viewer</h1>
             <p className="tagline">Search for Rice courses across the years</p>
-          </div>
-          <div className="esther-auth-panel">
-            <button
-              type="button"
-              className="esther-auth-btn"
-              onClick={() => setShowAuthModal(true)}
-            >
-              Login to ESTHER
-            </button>
-            <span className={`esther-auth-status ${estherAuthState === 'authenticated' ? 'active' : 'inactive'}`}>
-              {estherAuthState === 'authenticated' ? 'Authenticated' : 'Not signed in'}
-            </span>
           </div>
         </div>
       </div>
@@ -1371,9 +1285,6 @@ function App() {
                       const evaluationState = evaluationLookup[getEvaluationKey(course)]
                       const instructorEvalState = instructorEvalLookup[getInstructorEvalKey(course)]
                       const coursePageUrl = `https://courses.rice.edu/courses/courses/!SWKSCAT.cat?p_action=COURSE&p_term=${course.term}&p_crn=${course.crn}`
-                      const authRequired = [syllabusState, evaluationState, instructorEvalState].some(
-                        (state) => state?.status === 'none' && state?.message === ESTHER_AUTH_REQUIRED_MESSAGE
-                      )
 
                       return (
                         <div
@@ -1464,33 +1375,50 @@ function App() {
                             </button>
                           </div>
 
-                          {authRequired && (
-                            <p className="evaluation-status neutral">{ESTHER_AUTH_REQUIRED_MESSAGE}</p>
-                          )}
-
-                          {syllabusState?.status === 'available' && syllabusState.url && (
+                          {syllabusState?.status === 'available' && (syllabusState.url || syllabusState.textContent) && (
                             <>
                               <button
                                 type="button"
                                 className="toggle-syllabus-btn"
                                 onClick={() => setActiveSyllabusKey(activeSyllabusKey === getSyllabusKey(course) ? null : getSyllabusKey(course))}
                               >
-                                {activeSyllabusKey === getSyllabusKey(course) ? '▾ Hide Syllabus PDF' : '▸ View Syllabus PDF'}
+                                {activeSyllabusKey === getSyllabusKey(course)
+                                  ? `▾ Hide Syllabus (${(syllabusState.fileType || 'doc').toUpperCase()})`
+                                  : `▸ View Syllabus (${(syllabusState.fileType || 'doc').toUpperCase()})`}
                               </button>
                               {activeSyllabusKey === getSyllabusKey(course) && (
                                 <div className="syllabus-viewer">
-                                  <iframe
-                                    src={syllabusState.url}
-                                    type="application/pdf"
-                                    className="syllabus-iframe"
-                                    title="Syllabus PDF"
-                                  />
+                                  {syllabusState.fileType === 'pdf' ? (
+                                    <iframe
+                                      src={syllabusState.url}
+                                      type="application/pdf"
+                                      className="syllabus-iframe"
+                                      title="Syllabus PDF"
+                                    />
+                                  ) : syllabusState.fileType === 'txt' ? (
+                                    <div className="syllabus-text-viewer">
+                                      <pre>{syllabusState.textContent}</pre>
+                                    </div>
+                                  ) : (
+                                    <div className="syllabus-doc-viewer">
+                                      <p className="syllabus-doc-info">
+                                        This syllabus is in <strong>.{syllabusState.fileType || 'doc'}</strong> format ({syllabusState.filename || 'syllabus document'}).
+                                      </p>
+                                      <a
+                                        href={syllabusState.url}
+                                        download={syllabusState.filename || `syllabus_${course.term}_${course.crn}.${syllabusState.fileType || 'docx'}`}
+                                        className="syllabus-download-btn"
+                                      >
+                                        ⬇ Download {syllabusState.filename || 'Syllabus Document'}
+                                      </a>
+                                    </div>
+                                  )}
                                 </div>
                               )}
                             </>
                           )}
 
-                          {syllabusState?.status === 'none' && syllabusState.message !== ESTHER_AUTH_REQUIRED_MESSAGE && (
+                          {syllabusState?.status === 'none' && (
                             <p className="syllabus-status neutral">{syllabusState.message}</p>
                           )}
 
@@ -1582,7 +1510,7 @@ function App() {
                             </>
                           )}
 
-                          {instructorEvalState?.status === 'none' && instructorEvalState?.message !== ESTHER_AUTH_REQUIRED_MESSAGE && (
+                          {instructorEvalState?.status === 'none' && (
                             <p className="evaluation-status neutral">{instructorEvalState?.message}</p>
                           )}
 
@@ -1590,7 +1518,7 @@ function App() {
                             <p className="evaluation-status error">{instructorEvalState?.message}</p>
                           )}
 
-                          {evaluationState?.status === 'none' && evaluationState?.message !== ESTHER_AUTH_REQUIRED_MESSAGE && (
+                          {evaluationState?.status === 'none' && (
                             <p className="evaluation-status neutral">{evaluationState?.message}</p>
                           )}
 
@@ -1619,66 +1547,6 @@ function App() {
           )}
         </section>
       </div>
-
-      {/* <footer className="app-footer">
-        <p>Built by Rishabh Rengarajan, Rice '29</p>
-      </footer> */}
-
-      {showAuthModal && (
-        <div className="modal-overlay auth-modal-overlay">
-          <div className="modal-content auth-modal-content">
-            <h2 className="auth-modal-title">ESTHER Login</h2>
-            <div className="auth-modal-disclaimer">
-              Credentials are not saved by this site. They are sent directly to ESTHER for Duo push-notification authentication. This is only required for viewing syllabi and evaluations.
-            </div>
-            <p className="auth-modal-copy">
-              Sign in with your Rice NetID to open an ESTHER session for this browser.
-            </p>
-
-            <form onSubmit={handleAuthSubmit}>
-              <div className="auth-fields-row">
-                <div className="auth-field">
-                  <label>Rice NetID</label>
-                  <input
-                    type="text"
-                    value={netid}
-                    onChange={(e) => setNetid(e.target.value)}
-                    required
-                  />
-                </div>
-                <div className="auth-field">
-                  <label>Password</label>
-                  <input
-                    type="password"
-                    value={password}
-                    onChange={(e) => setPassword(e.target.value)}
-                    required
-                  />
-                </div>
-              </div>
-
-              {authError && <p className="auth-error">{authError}</p>}
-
-              <div className="auth-actions">
-                <button
-                  type="button"
-                  onClick={() => setShowAuthModal(false)}
-                  className="auth-cancel-btn"
-                >
-                  Cancel
-                </button>
-                <button
-                  type="submit"
-                  disabled={authLoading}
-                  className="auth-submit-btn"
-                >
-                  {authLoading ? 'Waiting for Duo...' : 'Login and Send Duo'}
-                </button>
-              </div>
-            </form>
-          </div>
-        </div>
-      )}
     </div>
   )
 }

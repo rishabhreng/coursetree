@@ -1,39 +1,26 @@
+import json
 import re
+from pathlib import Path
 from typing import Dict, List, Optional
 from xml.etree import ElementTree as ET
 
-from fastapi import FastAPI, HTTPException, Depends, Header, Query
+from fastapi import FastAPI, HTTPException, Depends, Query
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import StreamingResponse, FileResponse
 import sqlite3 as sql
 import requests as r
 from bs4 import BeautifulSoup
 
-from auth_utils import (
-    require_client_id,
-    store_client_session,
-    clear_client_auth,
-    ensure_authenticated_session,
-    AUTH_SESSIONS,
-    authenticate_with_duo,
-)
-
 from fetch_utils import (
     METADATA_COURSES_URL,
-    find_eval_header,
-    parse_eval_header_text,
+    SYLLABI_DIR,
     get_db,
-    get_valid_term_codes,
-    fetch_syllabus_pdf_with_session,
-    is_pdf_response,
-    extract_charts_from_results,
-    split_instructor_names,
-    get_instructor_ids,
+    get_evals_db,
+    get_instructor_evals_db,
 )
 
 from search_utils import (
     CoursesResponse,
-    LoginRequest,
     Subject,
     SyllabusResponse,
     Term,
@@ -59,37 +46,6 @@ app.add_middleware(
 )
 
 SUBJECT_NAMES = {}
-
-
-@app.post("/api/auth")
-async def login(
-    req: LoginRequest,
-    x_client_id: Optional[str] = Header(default=None, alias="X-Client-Id"),
-):
-    """Receives credentials from React and triggers headless Duo push."""
-    try:
-        client_id = require_client_id(x_client_id)
-
-        session = await authenticate_with_duo(req.netid, req.password)
-        store_client_session(client_id, session)
-
-        return {"success": True, "message": "Successfully authenticated with ESTHER"}
-    except HTTPException:
-        raise
-    except Exception as e:
-        print(f"[AUTH] Unexpected login error: {str(e)}")
-        raise HTTPException(
-            status_code=500,
-            detail="Authentication failed due to a server error.",
-        )
-
-
-@app.get("/api/auth/status")
-async def auth_status(
-    x_client_id: Optional[str] = Header(default=None, alias="X-Client-Id")
-):
-    client_id = require_client_id(x_client_id)
-    return {"authenticated": client_id in AUTH_SESSIONS}
 
 
 @app.get("/api/courses/", response_model=CoursesResponse)
@@ -275,211 +231,150 @@ def get_terms(db: sql.Connection = Depends(get_db)) -> List[Term]:
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to fetch terms: {str(e)}")
 
-
-@app.get("/api/subjects", response_model=List[Subject])
-def get_subjects(db: sql.Connection = Depends(get_db)) -> List[Subject]:
-    """Get all available subject codes with their full subject names."""
-    try:
-        cur = db.cursor()
-
-        # Find all tables that look like 'subjects_XXXXXX'
-        cur.execute(
-            "SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'subjects_%'"
-        )
-        subject_tables = [row[0] for row in cur.fetchall()]
-
-        for table in subject_tables:
-            rows = cur.execute(f"SELECT DISTINCT code, subject FROM {table}").fetchall()
-            for code, subject in rows:
-                code_upper = code.upper()
-                VALID_SUBJECTS.add(code_upper)
-                SUBJECT_NAMES[code_upper] = subject
-
-        subjects = [
-            Subject(code=code, subject=SUBJECT_NAMES.get(code, code))
-            for code in sorted(VALID_SUBJECTS)
-        ]
-        return subjects
-    except Exception as e:
-        raise HTTPException(
-            status_code=500, detail=f"Failed to fetch subjects: {str(e)}"
-        )
+def find_local_syllabus_file(term: str, crn: str) -> Optional[Path]:
+    """Finds downloaded syllabus file on disk for a given term and crn."""
+    clean_term = term.replace("courses_", "")
+    term_dir = SYLLABI_DIR / clean_term
+    if not term_dir.is_dir():
+        return None
+    # Check pattern {crs}_{crn}.* and {crn}.*
+    matches = list(term_dir.glob(f"*_{crn}.*")) + list(term_dir.glob(f"{crn}.*"))
+    for match in matches:
+        if match.is_file() and match.stat().st_size > 0:
+            return match
+    return None
 
 
 @app.get("/api/syllabus", response_model=SyllabusResponse)
 async def get_syllabus(
-    term_code: str,
     crn: str,
-    x_client_id: Optional[str] = Header(default=None, alias="X-Client-Id"),
+    term: Optional[str] = Query(None),
+    term_code: Optional[str] = Query(None),
 ) -> SyllabusResponse:
     """
-    Check if syllabus exists for a course.
-    If it does, query PDF endpoint to fetch it via authenticated session.
+    Check if syllabus exists for a course from downloaded syllabi archive or live metadata.
     """
-    try:
-        client_id = require_client_id(x_client_id)
+    clean_term = (term or term_code or "").replace("courses_", "")
+    if not clean_term:
+        raise HTTPException(status_code=400, detail="Missing term parameter")
 
-        # Check if syllabus exists via faster metadata api first (doesn't require auth):
-        try:
-            metadata_url = (
-                f"{METADATA_COURSES_URL}?action=SYLLABUS&term={term_code}&crn={crn}"
-            )
-            metadata_response = r.get(metadata_url, timeout=15)
-            metadata_response.raise_for_status()
-
-            metadata = ET.fromstring(metadata_response.text)
-            if metadata.attrib.get("has-syllabus") != "yes":
-                return SyllabusResponse(syllabus_url=None, message="No syllabus posted for this term")
-        except Exception as e:
-            print(f"[ERROR] Could not check syllabus metadata: {str(e)}")
-            return SyllabusResponse(syllabus_url=None, message="No syllabus posted for this term")
-
-        try:
-            session = await ensure_authenticated_session(client_id)
-
-            # Fetch pdf with playwright session.
-            response = fetch_syllabus_pdf_with_session(session, term_code, crn)
-            response.raise_for_status()
-
-            pdf_content = response.content
-
-            # Check various failures before returning content.
-            if not is_pdf_response(pdf_content):
-                # Only re-authenticate when response appears to be login/auth-related.
-                if not is_pdf_response(pdf_content):
-                    print("[DEBUG] Auth expiry detected during syllabus fetch.")
-                    clear_client_auth(client_id)
-                    raise HTTPException(
-                        status_code=401, detail="Authentication required"
-                    )
-
-                if not is_pdf_response(pdf_content):
-                    raise HTTPException(
-                        status_code=502,
-                        detail="Failed to retrieve a valid syllabus PDF",
-                    )
-
-            # Return the PDF content directly
-            return StreamingResponse(
-                iter([pdf_content]),
-                media_type="application/pdf",
-                headers={
-                    "Content-Disposition": f"inline; filename=syllabus_{term_code}_{crn}.pdf"
-                },
-            )
-        except HTTPException:
-            raise
-        except Exception as e:
-            print(f"[ERROR] Error fetching syllabus PDF: {str(e)}")
-            raise HTTPException(
-                status_code=502, detail=f"Failed to fetch syllabus PDF: {str(e)}"
-            )
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(
-            status_code=502, detail=f"Failed to check syllabus: {str(e)}"
+    local_file = find_local_syllabus_file(clean_term, crn)
+    if local_file:
+        ext = local_file.suffix.lower().lstrip(".")
+        return SyllabusResponse(
+            syllabus_url=f"/api/syllabus/file?term={clean_term}&crn={crn}",
+            file_type=ext,
+            filename=local_file.name,
+            message="Syllabus available",
         )
+
+    try:
+        metadata_url = (
+            f"{METADATA_COURSES_URL}?action=SYLLABUS&term={clean_term}&crn={crn}"
+        )
+        metadata_response = r.get(metadata_url, timeout=15)
+        metadata_response.raise_for_status()
+
+        metadata = ET.fromstring(metadata_response.text)
+        if metadata.attrib.get("has-syllabus") == "yes":
+            return SyllabusResponse(
+                syllabus_url=f"http://esther.rice.edu/selfserve/!bwzkpsyl.v_viewDoc?term={clean_term}&crn={crn}&type=SYLLABUS",
+                file_type="external",
+                filename=None,
+                message="Syllabus posted on ESTHER",
+            )
+        return SyllabusResponse(syllabus_url=None, file_type=None, filename=None, message="No syllabus posted for this term")
+    except Exception as e:
+        print(f"[ERROR] Could not check syllabus metadata: {str(e)}")
+        return SyllabusResponse(syllabus_url=None, file_type=None, filename=None, message="Error checking for syllabus")
+
+
+@app.get("/api/syllabus/file")
+async def get_syllabus_file(
+    crn: str,
+    term: Optional[str] = Query(None),
+    term_code: Optional[str] = Query(None),
+):
+    """
+    Serve the downloaded syllabus file (PDF, DOCX, DOC, TXT) with correct MIME type.
+    """
+    clean_term = (term or term_code or "").replace("courses_", "")
+    if not clean_term:
+        raise HTTPException(status_code=400, detail="Missing term parameter")
+
+    local_file = find_local_syllabus_file(clean_term, crn)
+    if not local_file:
+        raise HTTPException(status_code=404, detail="Syllabus file not found")
+
+    ext = local_file.suffix.lower()
+    media_types = {
+        ".pdf": "application/pdf",
+        ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        ".doc": "application/msword",
+        ".rtf": "application/rtf",
+        ".txt": "text/plain; charset=utf-8",
+        ".html": "text/html; charset=utf-8",
+    }
+    media_type = media_types.get(ext, "application/octet-stream")
+
+    return FileResponse(
+        path=str(local_file),
+        media_type=media_type,
+        filename=local_file.name,
+    )
 
 
 @app.get("/api/evaluate")
-async def get_evaluation(
-    term: str,
+def get_evaluation(
     crn: str,
-    subject: str,
-    x_client_id: Optional[str] = Header(default=None, alias="X-Client-Id"),
+    term: Optional[str] = Query(None),
+    term_code: Optional[str] = Query(None),
+    subject: Optional[str] = Query(None),
+    course_code: Optional[str] = Query(None),
+    db: sql.Connection = Depends(get_evals_db),
 ):
     """
-    Get course evaluation data. First call triggers Duo auth.
-    Subsequent calls reuse stored session.
-
-    Returns HTML of the results-container div.
+    Get cached course evaluation data from database.
     """
+    clean_term = (term or term_code or "").replace("courses_", "")
+    if not clean_term:
+        return {"success": False, "message": "Missing term parameter"}
+
     try:
-        client_id = require_client_id(x_client_id)
+        cur = db.cursor()
+        cur.execute(
+            "SELECT html, charts_json, subject FROM evaluations WHERE term = ? AND crn = ?",
+            (clean_term, crn),
+        )
+        row = cur.fetchone()
+        
+        # Fallback to course_code matching if CRN not found directly (e.g. for cross-listed courses)
+        if not row and course_code:
+            cur.execute(
+                "SELECT html, charts_json, subject FROM evaluations WHERE term = ? AND course_code = ? LIMIT 1",
+                (clean_term, course_code),
+            )
+            row = cur.fetchone()
 
-        session = await ensure_authenticated_session(client_id)
-
-        # Check if term is valid
-        valid_terms = get_valid_term_codes(session)
-        if not valid_terms:
-            raise HTTPException(status_code=401, detail="Authentication required")
-        if term not in valid_terms:
+        if not row:
             return {
                 "success": False,
                 "message": "No evaluation data found",
-                "term": term,
+                "term": clean_term,
                 "crn": crn,
-                "subject": subject.upper(),
+                "subject": (subject or "").upper(),
             }
 
-        # Use the stored session (which maintains cookies)
-        url = "https://esther.rice.edu/selfserve/swkscmt.main"
-
-        # First, GET the page to extract the as_fid token
-        get_response = session.get(url, timeout=15)
-        soup = BeautifulSoup(get_response.text, "html.parser")
-
-        # Extract as_fid from form or page
-        as_fid = None
-        form = soup.find("form")
-        if form:
-            as_fid_input = form.find("input", {"name": "as_fid"})
-            if as_fid_input:
-                as_fid = as_fid_input.get("value", "")
-
-        if not as_fid:
-            # Try to extract from page source
-            import re as regex_module
-
-            match = regex_module.search(
-                r'as_fid["\']?\s*[:=]\s*["\']?([a-f0-9]{40})', get_response.text
-            )
-            if match:
-                as_fid = match.group(1)
-
-        print(f"[DEBUG] as_fid: {as_fid}")
-
-        payload = {
-            "p_commentid": "",
-            "p_confirm": "1",
-            "p_term": term,
-            "p_type": "Course",
-            "p_crn": crn,
-        }
-
-        if as_fid:
-            payload["as_fid"] = as_fid
-
-        print(f"[DEBUG] Posting payload: {payload}")
-        response = session.post(url, data=payload, timeout=15)
-        print(f"[DEBUG] Response status: {response.status_code}")
-        print(f"[DEBUG] Response length: {len(response.text)}")
-        print(f"[DEBUG] Response preview: {response.text[:500]}")
-
-        # Check if session is valid
-        if "Course and Instructor Evaluation Display" not in response.text:
-            print("[DEBUG] Session appears invalid.")
-            clear_client_auth(client_id)
-            raise HTTPException(status_code=401, detail="Authentication required")
-
-        # Parse and extract results-container div
-        soup = BeautifulSoup(response.text, "html.parser")
-        results_container = soup.find("div", class_="results-container")
-
-        charts_data = extract_charts_from_results(results_container)
+        charts_data = json.loads(row["charts_json"]) if row["charts_json"] else []
         return {
             "success": True,
-            "html": str(results_container),
+            "html": row["html"],
             "charts": charts_data,
-            "term": term,
+            "term": clean_term,
             "crn": crn,
-            "subject": subject.upper(),
+            "subject": (row["subject"] or subject or "").upper(),
         }
 
-    except HTTPException:
-        raise
     except Exception as e:
         print(f"Error in evaluation endpoint: {str(e)}")
         raise HTTPException(
@@ -488,146 +383,122 @@ async def get_evaluation(
 
 
 @app.get("/api/instructor-evaluate")
-async def get_instructor_evaluation(
-    term: str,
-    crn: Optional[str] = None,
-    instructor_names: Optional[str] = None,
+def get_instructor_evaluation(
+    term: Optional[str] = Query(None),
+    term_code: Optional[str] = Query(None),
+    crn: Optional[str] = Query(None),
+    instructor_names: Optional[str] = Query(None),
     db: sql.Connection = Depends(get_db),
-    x_client_id: Optional[str] = Header(default=None, alias="X-Client-Id"),
+    evals_db: sql.Connection = Depends(get_instructor_evals_db)
 ):
     """
-    Fetch instructor evaluations for a term and (optionally) filter by course CRN.
-    Supports instructor IDs directly or instructor names resolved via the DB.
+    Fetch instructor evaluations. Returns cached data if available.
     """
+    clean_term = (term or term_code or "").replace("courses_", "")
+    if not clean_term or not crn or not instructor_names:
+        return {"success": False, "message": "Missing term, crn or instructor_names"}
+
     try:
-        client_id = require_client_id(x_client_id)
+        # 1. Resolve instructor names to instructor IDs using main.db
+        names_to_lookup = [n.strip() for n in instructor_names.split("|") if n.strip()]
+        resolved_ids = []
+        missing_instructors = []
+        
+        cur_main = db.cursor()
+        try:
+            cur_main.execute(f"SELECT name, id FROM instructors_{clean_term}")
+            db_instructors = cur_main.fetchall()
+            
+            # Build comprehensive name_to_id map
+            name_to_id = {}
+            for db_name, ins_id in db_instructors:
+                if not db_name or not ins_id:
+                    continue
+                db_name_clean = db_name.strip()
+                name_to_id[db_name_clean.lower()] = str(ins_id)
+                parts = [p.strip() for p in db_name_clean.split(",") if p.strip()]
+                if len(parts) >= 2:
+                    last, first = parts[0], parts[1]
+                    first_only = first.split()[0] if first else ""
+                    name_to_id[f"{first} {last}".lower()] = str(ins_id)
+                    name_to_id[f"{first_only} {last}".lower()] = str(ins_id)
+                    name_to_id[f"{last}, {first}".lower()] = str(ins_id)
+                    name_to_id[f"{last}, {first_only}".lower()] = str(ins_id)
+                    name_to_id[f"{last} {first}".lower()] = str(ins_id)
+                else:
+                    name_to_id[db_name_clean.lower()] = str(ins_id)
+            
+            for instr in names_to_lookup:
+                instr_clean = instr.strip()
+                if not instr_clean:
+                    continue
+                instr_lower = instr_clean.lower()
+                iid = name_to_id.get(instr_lower)
+                if not iid and "," in instr_clean:
+                    parts = [p.strip() for p in instr_clean.split(",") if p.strip()]
+                    if len(parts) >= 2:
+                        last, first = parts[0], parts[1]
+                        iid = name_to_id.get(f"{first} {last}".lower()) or name_to_id.get(f"{last}, {first}".lower()) or name_to_id.get(last.lower())
+                if not iid:
+                    # Token subset match
+                    instr_tokens = set(re.findall(r"\w+", instr_lower))
+                    if instr_tokens:
+                        for db_k, v in name_to_id.items():
+                            db_tokens = set(re.findall(r"\w+", db_k))
+                            if instr_tokens.issubset(db_tokens) or db_tokens.issubset(instr_tokens):
+                                iid = v
+                                break
+                if iid:
+                    resolved_ids.append((instr_clean, iid))
+                else:
+                    missing_instructors.append(instr_clean)
+                    
+        except sql.OperationalError:
+            pass # Table might not exist
 
-        session = await ensure_authenticated_session(client_id)
-
-        valid_terms = get_valid_term_codes(session)
-        if not valid_terms:
-            raise HTTPException(status_code=401, detail="Authentication required")
-        if term not in valid_terms:
+        if not resolved_ids:
             return {
                 "success": False,
-                "message": "No evaluation data found",
-                "term": term,
+                "term": clean_term,
                 "crn": crn,
+                "results": [],
+                "missing_instructors": missing_instructors,
+                "message": "Could not map any instructors to their IDs",
             }
 
-        requested_names = []
-        if instructor_names:
-            requested_names.extend(split_instructor_names(instructor_names))
-        
-        unique_ids = get_instructor_ids(term, requested_names, db)
-
-        if not unique_ids:
-            if requested_names:
-                return {
-                    "success": False,
-                    "message": "No matching instructors found",
-                    "term": term,
-                    "crn": crn,
-                    "results": [],
-                    "missing_instructors": requested_names,
-                }
-            raise HTTPException(
-                status_code=400,
-                detail="Missing instructor_id(s) or instructor_name(s).",
-            )
-        url = "https://esther.rice.edu/selfserve/swkscmt.main"
-
+        # 2. Fetch evaluation data for the resolved instructor IDs from evals.db
+        cur_evals = evals_db.cursor()
         results = []
-
-        for name, id in unique_ids.items():
-            print(f"[DEBUG] Fetching evaluation for {name} ({id})")
-            get_response = session.get(url, timeout=15)
-            soup = BeautifulSoup(get_response.text, "html.parser")
-
-            as_fid = None
-            form = soup.find("form")
-            if form:
-                as_fid_input = form.find("input", {"name": "as_fid"})
-                if as_fid_input:
-                    as_fid = as_fid_input.get("value", "")
-
-            if not as_fid:
-                match = re.search(
-                    r'as_fid["\']?\s*[:=]\s*["\']?([a-f0-9]{40})',
-                    get_response.text,
-                )
-                if match:
-                    as_fid = match.group(1)
-
-            payload = {
-                "p_commentid": "",
-                "p_confirm": "1",
-                "p_term": term,
-                "p_type": "Instructor",
-                "p_instr": id,
-            }
-            if as_fid:
-                payload["as_fid"] = as_fid
-            
-
-            response = session.post(url, data=payload, timeout=15)
-
-            if (
-                "bmenu.P_MainMnu" not in response.text
-                and "Personal Information" not in response.text
-            ):
-                clear_client_auth(client_id)
-                raise HTTPException(status_code=401, detail="Authentication required")
-
-            page = BeautifulSoup(response.text, "html.parser")
-            sections = []
-            for container in page.find_all("div", class_="results-container"):
-                header = find_eval_header(container)
-                header_text = header.get_text(" ", strip=True) if header else ""
-                meta = parse_eval_header_text(header_text)
-                charts = extract_charts_from_results(container)
-                section = {
-                    **meta,
-                    "html": str(container),
-                    "charts": charts,
-                }
-                print(section)
-                sections.append(section)
-
-            if crn:
-                sections = [
-                    section for section in sections
-                    if section.get("crn") == crn or crn in (section.get("all_crns") or [])
-                ]
-            
-            print(sections)
-
-            results.append(
-                {
-                    "instructor_id": id,
-                    "instructor_name": name,
-                    "sections": sections,
-                    "success": bool(sections),
-                    "message": (
-                        "No evaluation data found"
-                        if not sections
-                        else "Evaluation data found"
-                    ),
-                }
+        
+        for instr_name, instr_id in resolved_ids:
+            cur_evals.execute(
+                "SELECT html, charts_json FROM instructor_evaluations WHERE term = ? AND crn = ? AND instructor_id = ?",
+                (clean_term, crn, instr_id)
             )
-        has_evals = any(result.get("success") for result in results)
+            row = cur_evals.fetchone()
+            if row:
+                charts_data = json.loads(row["charts_json"]) if row["charts_json"] else []
+                results.append({
+                    "instructor_name": instr_name,
+                    "instructor_id": instr_id,
+                    "html": row["html"],
+                    "charts": charts_data
+                })
+            else:
+                missing_instructors.append(instr_name)
+
         return {
-            "success": has_evals,
+            "success": len(results) > 0,
             "term": term,
             "crn": crn,
             "results": results,
-            "message": "Evaluation data found" if has_evals else "No evaluation data found",
+            "missing_instructors": missing_instructors,
+            "message": "Instructor evaluations loaded" if results else "No evaluation data found for resolved instructors"
         }
 
-    except HTTPException:
-        raise
     except Exception as e:
         print(f"Error in instructor evaluation endpoint: {str(e)}")
         raise HTTPException(
-            status_code=500, detail=f"Failed to fetch instructor evaluation: {str(e)}"
+            status_code=500, detail=f"Failed to fetch instructor evaluations: {str(e)}"
         )
+

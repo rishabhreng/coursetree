@@ -116,69 +116,6 @@ body {
   margin: 0;
 }
 
-.esther-auth-panel {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  margin-top: 0;
-  flex-shrink: 0;
-}
-
-.esther-auth-btn {
-  padding: 8px 12px;
-  border: 1px solid rgba(255, 255, 255, 0.16);
-  border-radius: 999px;
-  background: linear-gradient(135deg, #ffcc4d 0%, #f59e0b 100%);
-  color: #1d1b14;
-  font-family: inherit;
-  font-size: 0.84rem;
-  font-weight: 800;
-  letter-spacing: 0.25px;
-  cursor: pointer;
-  transition: transform 0.2s ease, box-shadow 0.2s ease, filter 0.2s ease;
-}
-
-.esther-auth-btn:hover {
-  transform: translateY(-1px);
-  box-shadow: 0 12px 24px rgba(245, 158, 11, 0.24);
-  filter: brightness(1.02);
-}
-
-.esther-auth-btn:focus-visible {
-  outline: 2px solid #f8e3a1;
-  outline-offset: 3px;
-}
-
-.esther-auth-status {
-  font-size: 0.8rem;
-  font-weight: 700;
-  color: var(--text-secondary);
-  white-space: nowrap;
-  line-height: 1.1;
-}
-
-.esther-auth-status.active {
-  color: #86efac;
-}
-
-.esther-auth-status.inactive {
-  color: #fde68a;
-}
-
-.esther-auth-disclaimer {
-  margin-top: 10px;
-  margin-left: auto;
-  max-width: 760px;
-  padding: 8px 10px;
-  border-left: 3px solid var(--warning);
-  border-radius: 10px;
-  background: rgba(245, 158, 11, 0.08);
-  color: var(--text-secondary);
-  font-size: 0.82rem;
-  line-height: 1.35;
-  text-align: left;
-}
-
 @media (max-width: 760px) {
   .header-top {
     flex-direction: column;
@@ -193,135 +130,6 @@ body {
     gap: 4px;
     text-align: center;
   }
-
-  .esther-auth-panel {
-    width: 100%;
-    justify-content: center;
-  }
-}
-
-.auth-modal-overlay {
-  position: fixed;
-  top: 0;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  background: rgba(0, 0, 0, 0.72);
-  display: flex;
-  justify-content: center;
-  align-items: center;
-  z-index: 1000;
-  padding: 12px;
-}
-
-.auth-modal-content {
-  background: #fff;
-  color: #1f2937;
-  padding: 0.85rem 1.1rem;
-  border-radius: 10px;
-  max-width: 350px;
-  width: min(90vw, 350px);
-  box-shadow: 0 20px 50px rgba(0, 0, 0, 0.35);
-}
-
-.auth-modal-title {
-  margin: 0 0 0.35rem;
-  color: var(--primary);
-  font-size: 1.1rem;
-}
-
-.auth-modal-disclaimer {
-  margin-bottom: 0.45rem;
-  padding: 6px 8px;
-  border-left: 3px solid var(--warning);
-  border-radius: 6px;
-  background: rgba(245, 158, 11, 0.12);
-  color: #4b5563;
-  font-size: 0.76rem;
-  line-height: 1.3;
-}
-
-.auth-modal-copy {
-  margin-bottom: 0.5rem;
-  color: #4b5563;
-  font-size: 0.8rem;
-}
-
-.auth-fields-row {
-  display: grid;
-  grid-template-columns: 1fr 2.2fr;
-  gap: 8px;
-}
-
-.auth-field {
-  margin-bottom: 0.45rem;
-}
-
-.auth-field label {
-  display: block;
-  font-weight: 700;
-  font-size: 0.78rem;
-  margin-bottom: 2px;
-  color: #374151;
-  text-align: center;
-}
-
-.auth-field input {
-  width: 100%;
-  box-sizing: border-box;
-  padding: 5px 8px;
-  border-radius: 6px;
-  border: 1px solid #cbd5e1;
-  background: #f8fafc;
-  color: #111827;
-  font-family: inherit;
-  font-size: 0.85rem;
-}
-
-.auth-field input:focus {
-  outline: none;
-  border-color: var(--primary-light);
-  box-shadow: 0 0 0 3px rgba(0, 32, 91, 0.12);
-}
-
-.auth-error {
-  color: var(--error);
-  font-size: 0.78rem;
-  margin: 0 0 0.4rem;
-}
-
-.auth-actions {
-  display: flex;
-  gap: 6px;
-  justify-content: flex-end;
-  flex-wrap: wrap;
-  margin-top: 0.6rem;
-}
-
-.auth-cancel-btn,
-.auth-submit-btn {
-  padding: 5px 12px;
-  border: none;
-  border-radius: 6px;
-  cursor: pointer;
-  font-weight: 700;
-  font-size: 0.8rem;
-  font-family: inherit;
-}
-
-.auth-cancel-btn {
-  background: #e5e7eb;
-  color: #111827;
-}
-
-.auth-submit-btn {
-  background: var(--primary);
-  color: white;
-}
-
-.auth-submit-btn:disabled {
-  opacity: 0.7;
-  cursor: wait;
 }
 
 .container {
@@ -1469,6 +1277,55 @@ body {
   border: none;
   display: block;
   background: white;
+}
+
+.syllabus-text-viewer {
+  padding: 16px;
+  max-height: 500px;
+  overflow-y: auto;
+  background: rgba(0, 0, 0, 0.4);
+  font-family: inherit;
+}
+
+.syllabus-text-viewer pre {
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: var(--font-mono, monospace);
+  font-size: 0.88rem;
+  line-height: 1.5;
+  color: var(--text-primary);
+}
+
+.syllabus-doc-viewer {
+  padding: 24px 16px;
+  text-align: center;
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.syllabus-doc-info {
+  margin: 0 0 16px 0;
+  color: var(--text-secondary);
+  font-size: 0.95rem;
+}
+
+.syllabus-download-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 18px;
+  background: #3b82f6;
+  color: #ffffff;
+  border-radius: 6px;
+  font-size: 0.9rem;
+  font-weight: 500;
+  text-decoration: none;
+  transition: background 0.2s ease, transform 0.1s ease;
+}
+
+.syllabus-download-btn:hover {
+  background: #2563eb;
+  transform: translateY(-1px);
 }
 
 .course-link {

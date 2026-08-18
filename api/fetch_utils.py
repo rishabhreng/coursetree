@@ -9,7 +9,11 @@ from typing import Any, Dict, List, Optional
 from xml.etree import ElementTree as ET
 
 SYLLABUS_BASE_URL = "https://esther.rice.edu/selfserve/!bwzkpsyl.v_viewDoc"
-DB_PATH = Path.cwd().parent / "main.db"
+BASE_DIR = Path(__file__).resolve().parent.parent
+DB_PATH = BASE_DIR / "data" / "main.db"
+EVALS_DB_PATH = BASE_DIR / "data" / "evals.db"
+INSTRUCTOR_EVALS_DB_PATH = BASE_DIR / "data" / "instructor_evals.db"
+SYLLABI_DIR = BASE_DIR / "data" / "syllabi"
 METADATA_COURSES_URL = "https://courses.rice.edu/courses/!SWKSCAT.info"
 
 
@@ -31,6 +35,47 @@ def get_db():
     # uri needed to enable read-only mode, check_same_thread=False allows connection across multiple threads
     conn = sql.connect(
         f"file:{DB_PATH}?mode=ro", timeout=15.0, uri=True, check_same_thread=False
+    )
+    conn.row_factory = sql.Row
+    try:
+        yield conn
+    finally:
+        conn.close()
+
+
+def get_evals_db():
+    if not EVALS_DB_PATH.exists():
+        conn = sql.connect(":memory:", check_same_thread=False)
+        conn.row_factory = sql.Row
+        try:
+            yield conn
+        finally:
+            conn.close()
+        return
+
+    conn = sql.connect(
+        f"file:{EVALS_DB_PATH}?mode=ro", timeout=15.0, uri=True, check_same_thread=False
+    )
+    conn.row_factory = sql.Row
+    try:
+        yield conn
+    finally:
+        conn.close()
+
+
+def get_instructor_evals_db():
+    target_path = INSTRUCTOR_EVALS_DB_PATH if INSTRUCTOR_EVALS_DB_PATH.exists() else EVALS_DB_PATH
+    if not target_path.exists():
+        conn = sql.connect(":memory:", check_same_thread=False)
+        conn.row_factory = sql.Row
+        try:
+            yield conn
+        finally:
+            conn.close()
+        return
+
+    conn = sql.connect(
+        f"file:{target_path}?mode=ro", timeout=15.0, uri=True, check_same_thread=False
     )
     conn.row_factory = sql.Row
     try:
