@@ -912,7 +912,6 @@ function App() {
       const params = new URLSearchParams({
         term: course.term,
         crn: course.crn,
-        instructor_names: instructorNames.join('|'),
       })
       const res = await apiFetch(`/api/instructor-evaluate?${params.toString()}`)
 
@@ -966,108 +965,96 @@ function App() {
     }))
 
     try {
-      const params = new URLSearchParams({ term_code: course.term, crn: course.crn })
+      const params = new URLSearchParams({ term: course.term, crn: course.crn })
       const res = await apiFetch(`/api/syllabus?${params.toString()}`)
 
-      if (!res.ok) {
-        throw new Error(`Syllabus lookup failed ${res.status}`)
-      }
+      if (res.status === 404) {
+        let msg = 'No syllabus posted for this term'
+        try {
+          const errData = await res.json()
+          if (errData.detail) msg = errData.detail
+        } catch (_) {}
 
-      const contentType = (res.headers.get('content-type') || '').toLowerCase()
-
-      if (contentType.includes('application/pdf')) {
-        const pdfBlob = await res.blob()
-        const pdfUrl = URL.createObjectURL(pdfBlob)
-
-        setSyllabusLookup((prev) => {
-          const prior = prev[key]
-          if (prior?.blobUrl && prior?.url) {
-            URL.revokeObjectURL(prior.url)
-          }
-
-          return {
-            ...prev,
-            [key]: {
-              status: 'available',
-              message: 'Syllabus available',
-              url: pdfUrl,
-              fileType: 'pdf',
-              blobUrl: true,
-            },
-          }
-        })
-
-        setActiveSyllabusKey(key)
-        return
-      }
-
-      const data = await res.json()
-      if (data.syllabus_url) {
-        const syllabusUrl = data.syllabus_url.startsWith('http')
-          ? data.syllabus_url
-          : `${API_BASE_URL}${data.syllabus_url}`
-
-        const fileType = (data.file_type || '').toLowerCase()
-
-        // If it's a text syllabus, fetch text content directly for in-app viewing
-        if (fileType === 'txt') {
-          const textRes = await fetch(syllabusUrl)
-          const textContent = await textRes.text()
-
-          setSyllabusLookup((prev) => ({
-            ...prev,
-            [key]: {
-              status: 'available',
-              message: 'Syllabus available',
-              textContent: textContent,
-              fileType: 'txt',
-              url: syllabusUrl,
-              filename: data.filename,
-            },
-          }))
-          setActiveSyllabusKey(key)
-          return
-        }
-
-        // For PDF or general files, fetch as blob for iframe viewer or direct download
-        const fileRes = await fetch(syllabusUrl)
-        if (!fileRes.ok) {
-          throw new Error(`Failed to fetch syllabus document: ${fileRes.status}`)
-        }
-
-        const fileBlob = await fileRes.blob()
-        const objectUrl = URL.createObjectURL(fileBlob)
-
-        setSyllabusLookup((prev) => {
-          const prior = prev[key]
-          if (prior?.blobUrl && prior?.url) {
-            URL.revokeObjectURL(prior.url)
-          }
-
-          return {
-            ...prev,
-            [key]: {
-              status: 'available',
-              message: data.message || 'Syllabus available',
-              url: objectUrl,
-              downloadUrl: syllabusUrl,
-              fileType: fileType || (data.filename?.endsWith('.docx') ? 'docx' : 'pdf'),
-              filename: data.filename,
-              blobUrl: true,
-            },
-          }
-        })
-
-        setActiveSyllabusKey(key)
-      } else {
         setSyllabusLookup((prev) => ({
           ...prev,
           [key]: {
             status: 'none',
-            message: data.message || 'No syllabus posted for this term',
+            message: msg,
           },
         }))
+        return
       }
+
+      if (!res.ok) {
+        let errMsg = `Syllabus lookup failed (${res.status})`
+        try {
+          const errData = await res.json()
+          if (errData.detail) errMsg = errData.detail
+        } catch (_) {}
+        throw new Error(errMsg)
+      }
+
+      const contentType = (res.headers.get('content-type') || '').toLowerCase()
+      const disposition = res.headers.get('content-disposition') || ''
+      let filename = null
+      const filenameMatch = disposition.match(/filename\*?=(?:UTF-8'')?"?([^";]+)"?/i)
+      if (filenameMatch) {
+        filename = decodeURIComponent(filenameMatch[1])
+      }
+
+      let fileType = 'pdf'
+      if (filename) {
+        const ext = filename.split('.').pop().toLowerCase()
+        if (ext) fileType = ext
+      } else if (contentType.includes('application/pdf')) {
+        fileType = 'pdf'
+      } else if (contentType.includes('text/plain')) {
+        fileType = 'txt'
+      } else if (contentType.includes('wordprocessingml') || contentType.includes('docx')) {
+        fileType = 'docx'
+      } else if (contentType.includes('msword') || contentType.includes('doc')) {
+        fileType = 'doc'
+      }
+
+      if (fileType === 'txt' || contentType.includes('text/plain')) {
+        const textContent = await res.text()
+        setSyllabusLookup((prev) => ({
+          ...prev,
+          [key]: {
+            status: 'available',
+            message: 'Syllabus available',
+            textContent: textContent,
+            fileType: 'txt',
+            filename: filename || `syllabus_${course.term}_${course.crn}.txt`,
+          },
+        }))
+        setActiveSyllabusKey(key)
+        return
+      }
+
+      const fileBlob = await res.blob()
+      const objectUrl = URL.createObjectURL(fileBlob)
+
+      setSyllabusLookup((prev) => {
+        const prior = prev[key]
+        if (prior?.blobUrl && prior?.url) {
+          URL.revokeObjectURL(prior.url)
+        }
+
+        return {
+          ...prev,
+          [key]: {
+            status: 'available',
+            message: 'Syllabus available',
+            url: objectUrl,
+            fileType: fileType,
+            filename: filename || `syllabus_${course.term}_${course.crn}.${fileType}`,
+            blobUrl: true,
+          },
+        }
+      })
+
+      setActiveSyllabusKey(key)
     } catch (err) {
       setSyllabusLookup((prev) => ({
         ...prev,

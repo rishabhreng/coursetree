@@ -1,18 +1,15 @@
 import json
 import re
-from pathlib import Path
-from typing import Dict, List, Optional
+from typing import List, Optional
 from xml.etree import ElementTree as ET
 
 from fastapi import FastAPI, HTTPException, Depends, Query
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse, FileResponse
+from fastapi.responses import FileResponse
 import sqlite3 as sql
 import requests as r
-from bs4 import BeautifulSoup
 
 from fetch_utils import (
-    METADATA_COURSES_URL,
     SYLLABI_DIR,
     get_db,
     get_evals_db,
@@ -21,9 +18,6 @@ from fetch_utils import (
 
 from search_utils import (
     CoursesResponse,
-    Subject,
-    SyllabusResponse,
-    Term,
     clean_query,
     convert_to_fts_query,
     group_courses,
@@ -48,30 +42,19 @@ app.add_middleware(
 SUBJECT_NAMES = {}
 
 
-@app.get("/api/courses/", response_model=CoursesResponse)
+@app.get("/api/courses/")
 def search_courses(
-    q: Optional[str] = "",
-    distribution_group: Optional[str] = None,
-    analyzing_diversity: Optional[bool] = False,
-    distributions: Optional[List[str]] = Query(None),
-    term_code: str = DEFAULT_COURSE_TERM_CODE,
-    term_start: Optional[str] = None,
-    term_end: Optional[str] = None,
-    top_n_results: Optional[int] = None,
-    offset: int = 0,
+    q = "",
+    distribution_group = None,
+    analyzing_diversity = False,
+    term_code = DEFAULT_COURSE_TERM_CODE,
+    term_start = None,
+    term_end = None,
+    top_n_results = None,
+    offset = 0,
     db: sql.Connection = Depends(get_db),
-) -> CoursesResponse:
+):
     try:
-        # Backward compatibility with distributions parameter list
-        if distributions:
-            for d in distributions:
-                for item in d.split(","):
-                    item_str = item.strip()
-                    if item_str == "Analyzing Diversity Course":
-                        analyzing_diversity = True
-                    elif item_str in ["Distribution Group I", "Distribution Group II", "Distribution Group III"]:
-                        distribution_group = item_str
-
         q_clean = clean_query(q) if q else ""
         fts_query = convert_to_fts_query(q_clean) if q_clean else ""
 
@@ -79,16 +62,8 @@ def search_courses(
         if analyzing_diversity:
             dist_fts_clauses.append('distribution : "Analyzing Diversity"')
 
-        if distribution_group and distribution_group not in ["all", "none", ""]:
-            if distribution_group == "Distribution Group I":
-                dist_fts_clauses.append('distribution : "Distribution Group I"')
-            elif distribution_group == "Distribution Group II":
-                dist_fts_clauses.append('distribution : "Distribution Group II"')
-            elif distribution_group == "Distribution Group III":
-                dist_fts_clauses.append('distribution : "Distribution Group III"')
-            else:
-                escaped = distribution_group.replace('"', '""')
-                dist_fts_clauses.append(f'distribution : "{escaped}"')
+        if distribution_group:
+            dist_fts_clauses.append(f'distribution : "{distribution_group}"')
 
         dist_fts = ""
         if dist_fts_clauses:
@@ -146,8 +121,8 @@ def search_courses(
                     base_params.append(end_int)
 
         # 2. Determine secondary sort and specific CTE parameters
-        if q_clean and re.match(r"^[A-Z]{4}\s*\d{3}$", q_clean):
-            # Exact searches: use the unified best_search_rank so ranks aren't split
+        if q_clean and re.match(r"^[A-Z]{2,5}\s*\d{1,4}[A-Z]?$", q_clean):
+            # Exact/partial course code searches: use best search relevance
             secondary_sort = "best_search_rank ASC"
             cte_params = []
 
@@ -171,7 +146,7 @@ def search_courses(
         sql_query = f"""
             WITH RawFTS AS (
                 SELECT *, 
-                       bm25(global_search) as search_rank 
+                       bm25(global_search, 0.0, 5.0, 10.0, 0.0, 5.0, 2.0, 0.0, 0.2, 0.0, 0.0, 0.0) as search_rank 
                 FROM global_search
                 {where_clause}
             ),
@@ -218,93 +193,32 @@ def search_courses(
         )
 
 
-@app.get("/api/terms", response_model=List[Term])
-def get_terms(db: sql.Connection = Depends(get_db)) -> List[Term]:
-    """Get all available terms from the database."""
-    try:
-        rows = (
-            db.cursor()
-            .execute("SELECT code, term FROM terms ORDER BY code DESC")
-            .fetchall()
-        )
-        return [Term(code=row["code"], term=row["term"]) for row in rows]
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to fetch terms: {str(e)}")
+@app.get("/api/terms")
+def get_terms(db = Depends(get_db)):
+    return db.cursor().execute("SELECT code, term FROM terms ORDER BY code DESC").fetchall()
 
-def find_local_syllabus_file(term: str, crn: str) -> Optional[Path]:
+def find_local_syllabus_file(term_code: str, crn: str):
     """Finds downloaded syllabus file on disk for a given term and crn."""
-    clean_term = term.replace("courses_", "")
-    term_dir = SYLLABI_DIR / clean_term
+    term_dir = SYLLABI_DIR / term_code
     if not term_dir.is_dir():
         return None
-    # Check pattern {crs}_{crn}.* and {crn}.*
-    matches = list(term_dir.glob(f"*_{crn}.*")) + list(term_dir.glob(f"{crn}.*"))
+    matches = term_dir.glob(f"{crn}.*")
     for match in matches:
-        if match.is_file() and match.stat().st_size > 0:
+        if match.is_file():
             return match
     return None
 
-
-@app.get("/api/syllabus", response_model=SyllabusResponse)
+@app.get("/api/syllabus")
 async def get_syllabus(
     crn: str,
-    term: Optional[str] = Query(None),
-    term_code: Optional[str] = Query(None),
-) -> SyllabusResponse:
-    """
-    Check if syllabus exists for a course from downloaded syllabi archive or live metadata.
-    """
-    clean_term = (term or term_code or "").replace("courses_", "")
-    if not clean_term:
-        raise HTTPException(status_code=400, detail="Missing term parameter")
-
-    local_file = find_local_syllabus_file(clean_term, crn)
-    if local_file:
-        ext = local_file.suffix.lower().lstrip(".")
-        return SyllabusResponse(
-            syllabus_url=f"/api/syllabus/file?term={clean_term}&crn={crn}",
-            file_type=ext,
-            filename=local_file.name,
-            message="Syllabus available",
-        )
-
-    try:
-        metadata_url = (
-            f"{METADATA_COURSES_URL}?action=SYLLABUS&term={clean_term}&crn={crn}"
-        )
-        metadata_response = r.get(metadata_url, timeout=15)
-        metadata_response.raise_for_status()
-
-        metadata = ET.fromstring(metadata_response.text)
-        if metadata.attrib.get("has-syllabus") == "yes":
-            return SyllabusResponse(
-                syllabus_url=f"http://esther.rice.edu/selfserve/!bwzkpsyl.v_viewDoc?term={clean_term}&crn={crn}&type=SYLLABUS",
-                file_type="external",
-                filename=None,
-                message="Syllabus posted on ESTHER",
-            )
-        return SyllabusResponse(syllabus_url=None, file_type=None, filename=None, message="No syllabus posted for this term")
-    except Exception as e:
-        print(f"[ERROR] Could not check syllabus metadata: {str(e)}")
-        return SyllabusResponse(syllabus_url=None, file_type=None, filename=None, message="Error checking for syllabus")
-
-
-@app.get("/api/syllabus/file")
-async def get_syllabus_file(
-    crn: str,
-    term: Optional[str] = Query(None),
-    term_code: Optional[str] = Query(None),
+    term: str,
 ):
     """
     Serve the downloaded syllabus file (PDF, DOCX, DOC, TXT) with correct MIME type.
     """
-    clean_term = (term or term_code or "").replace("courses_", "")
-    if not clean_term:
-        raise HTTPException(status_code=400, detail="Missing term parameter")
-
-    local_file = find_local_syllabus_file(clean_term, crn)
+    local_file = find_local_syllabus_file(term.replace("courses_", ""), crn)
     if not local_file:
-        raise HTTPException(status_code=404, detail="Syllabus file not found")
+        raise HTTPException(status_code=404, detail="Syllabus not found for this term")
 
     ext = local_file.suffix.lower()
     media_types = {
@@ -325,119 +239,86 @@ async def get_syllabus_file(
 
 
 @app.get("/api/evaluate")
-def get_evaluation(
-    crn: str,
-    term: Optional[str] = Query(None),
-    term_code: Optional[str] = Query(None),
-    subject: Optional[str] = Query(None),
-    course_code: Optional[str] = Query(None),
-    db: sql.Connection = Depends(get_evals_db),
-):
-    """
-    Get cached course evaluation data from database.
-    """
-    clean_term = (term or term_code or "").replace("courses_", "")
-    if not clean_term:
-        return {"success": False, "message": "Missing term parameter"}
+def get_evaluation(crn: str, term: str, subject: str, course_code: str, db = Depends(get_evals_db)):
+    term = term.replace("courses_", "")
 
-    try:
-        cur = db.cursor()
+    cur = db.cursor()
+    cur.execute(
+        "SELECT html, charts_json, subject FROM evaluations WHERE term = ? AND crn = ?",
+        (term, crn),
+    )
+    row = cur.fetchone()
+    
+    # Fallback to course_code matching if CRN not found directly (e.g. for cross-listed courses)
+    if not row and course_code:
         cur.execute(
-            "SELECT html, charts_json, subject FROM evaluations WHERE term = ? AND crn = ?",
-            (clean_term, crn),
+            "SELECT html, charts_json, subject FROM evaluations WHERE term = ? AND course_code = ? LIMIT 1",
+            (term, course_code),
         )
         row = cur.fetchone()
-        
-        # Fallback to course_code matching if CRN not found directly (e.g. for cross-listed courses)
-        if not row and course_code:
-            cur.execute(
-                "SELECT html, charts_json, subject FROM evaluations WHERE term = ? AND course_code = ? LIMIT 1",
-                (clean_term, course_code),
-            )
-            row = cur.fetchone()
 
-        if not row:
-            return {
-                "success": False,
-                "message": "No evaluation data found",
-                "term": clean_term,
-                "crn": crn,
-                "subject": (subject or "").upper(),
-            }
-
-        charts_data = json.loads(row["charts_json"]) if row["charts_json"] else []
+    if not row:
         return {
-            "success": True,
-            "html": row["html"],
-            "charts": charts_data,
-            "term": clean_term,
+            "success": False,
+            "message": "No evaluation data found",
+            "term": term,
             "crn": crn,
-            "subject": (row["subject"] or subject or "").upper(),
+            "subject": (subject or "").upper(),
         }
 
-    except Exception as e:
-        print(f"Error in evaluation endpoint: {str(e)}")
-        raise HTTPException(
-            status_code=500, detail=f"Failed to fetch evaluation: {str(e)}"
-        )
-
+    charts_data = json.loads(row["charts_json"]) if row["charts_json"] else []
+    return {
+        "success": True,
+        "html": row["html"],
+        "charts": charts_data,
+        "term": term,
+        "crn": crn,
+        "subject": (row["subject"] or subject or "").upper(),
+    }
 
 @app.get("/api/instructor-evaluate")
 def get_instructor_evaluation(
-    term: Optional[str] = Query(None),
-    term_code: Optional[str] = Query(None),
-    crn: Optional[str] = Query(None),
-    instructor_names: Optional[str] = Query(None),
-    db: sql.Connection = Depends(get_db),
-    evals_db: sql.Connection = Depends(get_instructor_evals_db)
+    term: str,
+    crn: str,
+    db: sql.Connection = Depends(get_instructor_evals_db)
 ):
     """
     Fetch instructor evaluations. Returns cached data if available.
     """
-    clean_term = (term or term_code or "").replace("courses_", "")
-    if not clean_term or not crn:
-        return {"success": False, "message": "Missing term or crn"}
+    term = term.replace("courses_", "")
 
-    try:
-        cur_evals = evals_db.cursor()
-        cur_evals.execute(
-            "SELECT instructor_name, instructor_id, html, charts_json FROM instructor_evaluations WHERE term = ? AND crn = ?",
-            (clean_term, crn)
-        )
-        rows = cur_evals.fetchall()
-        
-        results = []
-        for row in rows:
-            charts_data = json.loads(row["charts_json"]) if row["charts_json"] else []
-            results.append({
-                "instructor_name": row["instructor_name"],
-                "instructor_id": row["instructor_id"],
-                "html": row["html"],
-                "charts": charts_data
-            })
+    cur = db.cursor()
+    cur.execute(
+        "SELECT instructor_name, instructor_id, html, charts_json FROM instructor_evaluations WHERE term = ? AND crn = ?",
+        (term, crn)
+    )
+    rows = cur.fetchall()
+    
+    results = []
+    for row in rows:
+        charts_data = json.loads(row["charts_json"]) if row["charts_json"] else []
+        results.append({
+            "instructor_name": row["instructor_name"],
+            "instructor_id": row["instructor_id"],
+            "html": row["html"],
+            "charts": charts_data
+        })
 
-        if not results:
-            return {
-                "success": False,
-                "term": clean_term,
-                "crn": crn,
-                "results": [],
-                "missing_instructors": [],
-                "message": "No instructor evaluations found for this course",
-            }
-
+    if not results:
         return {
-            "success": True,
+            "success": False,
             "term": term,
             "crn": crn,
-            "results": results,
+            "results": [],
             "missing_instructors": [],
-            "message": "Instructor evaluations loaded"
+            "message": "No instructor evaluations found for this course",
         }
 
-    except Exception as e:
-        print(f"Error in instructor evaluation endpoint: {str(e)}")
-        raise HTTPException(
-            status_code=500, detail=f"Failed to fetch instructor evaluations: {str(e)}"
-        )
-
+    return {
+        "success": True,
+        "term": term,
+        "crn": crn,
+        "results": results,
+        "missing_instructors": [],
+        "message": "Instructor evaluations loaded"
+    }
