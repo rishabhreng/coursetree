@@ -1472,13 +1472,12 @@ body {
 }
 
 .charts-grid.charts-grid-3x3 {
-  grid-template-columns: repeat(4, 1fr);
-  gap: 10px;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 12px;
 }
 
 @media (max-width: 1280px) {
-  .charts-grid,
-  .charts-grid.charts-grid-3x3 {
+  .charts-grid {
     grid-template-columns: repeat(3, 1fr);
   }
 }
@@ -1582,6 +1581,8 @@ body {
   color: var(--text-primary);
   font-size: 0.88rem;
   line-height: 1.45;
+  white-space: pre-wrap;
+  word-break: break-word;
 }
 
 .comment-date {

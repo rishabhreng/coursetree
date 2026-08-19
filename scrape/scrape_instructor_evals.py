@@ -302,7 +302,7 @@ def parse_instructor_page(html_text: str) -> List[Dict[str, Any]]:
                 "subject": subject,
                 "course_code": course_code,
                 "title": title,
-                "html": str(crn_div),
+                "html": str(results_container),
                 "charts_json": json.dumps(charts_data),
             })
 

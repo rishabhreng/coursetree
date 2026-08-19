@@ -707,18 +707,23 @@ function App() {
 
   const formatEvalHtml = (html) => {
     if (!html) return ''
-    let cleaned = html
-      .replace(/<div class="charts">[\s\S]*?<div class="comments">/g, '<div class="comments">')
-      .replace(/<div class="chart">[\s\S]*?<\/div>\s*<\/div>/g, '')
-      .replace(/<img[^>]*>/g, '')
-      .replace(/(?:<p[^>]*>)?\s*Class Mean\s*-\s*Average score within the CRN[\s\S]*?across all CRNs at Rice for the term\.?\s*(?:<\/p>)?/gi, '')
-      .replace(/Class Mean\s*-\s*Average score within the CRN[\s\S]*?across all CRNs at Rice for the term\.?/gi, '')
-      .replace(/(?:<p[^>]*>|<div[^>]*>)?\s*<a[^>]*>\s*Report a Concern\s*<\/a>\s*(?:<\/p>|<\/div>)?/gi, '')
-      .replace(/<a[^>]*>\s*Report a Concern\s*<\/a>/gi, '')
 
     try {
       const parser = new DOMParser()
-      const doc = parser.parseFromString(cleaned, 'text/html')
+      const doc = parser.parseFromString(html, 'text/html')
+
+      // Remove header elements, chart containers, images, fillers, and navigation links
+      doc.querySelectorAll('.results-header, .charts, .chart, img, .filler, a[class*="submit-crn"]').forEach((el) => el.remove())
+      doc.querySelectorAll('a').forEach((a) => {
+        if (/report a concern/i.test(a.textContent) || /go to course eval/i.test(a.textContent)) {
+          a.remove()
+        }
+      })
+      doc.querySelectorAll('div, p, span, td, tr').forEach((el) => {
+        if (/Class Mean\s*-\s*Average score/i.test(el.textContent) || /Rice Mean\s*-\s*Average score/i.test(el.textContent)) {
+          el.remove()
+        }
+      })
 
       let totalText = ''
       const totalMatch = doc.body.textContent.match(/Total Comments:\s*\d+/i)
@@ -726,37 +731,69 @@ function App() {
         totalText = totalMatch[0]
       }
 
-      // Convert line breaks and block element closings to newlines for reliable text splitting
-      const tempDiv = doc.createElement('div')
-      tempDiv.innerHTML = cleaned
-        .replace(/<br\s*\/?>/gi, '\n')
-        .replace(/<\/(p|div|tr|td|li|h\d)>/gi, '\n')
-
-      const rawText = tempDiv.textContent || ''
-      const lines = rawText.split('\n').map((s) => s.trim()).filter(Boolean)
-      const dateRegex = /\d{2}\/\d{2}\/\d{4}\s+\d{1,2}:\d{2}\s*(?:[AP]\.?M\.?)/gi
+      const cmtElements = doc.querySelectorAll('.cmt')
+      const dateRegex = /\d{2}\/\d{2}\/\d{4}\s+\d{1,2}:\d{2}\s*(?:[AP]\.?M\.?)/i
       const items = []
 
-      let currentParts = []
-      lines.forEach((line) => {
-        if (/student comments/i.test(line) || /total comments/i.test(line)) return
+      if (cmtElements.length > 0) {
+        cmtElements.forEach((cmt) => {
+          const dateMatch = cmt.textContent.match(dateRegex)
+          const dateStr = dateMatch ? dateMatch[0] : ''
 
-        const dateMatch = line.match(dateRegex)
-        if (dateMatch) {
-          const dateStr = dateMatch[0]
-          const remaining = line.replace(dateRegex, '').trim()
-          if (remaining) {
-            currentParts.push(remaining)
+          const clone = cmt.cloneNode(true)
+          clone.querySelectorAll('a').forEach((a) => a.remove())
+          clone.querySelectorAll('br').forEach((br) => br.replaceWith('\n'))
+          clone.querySelectorAll('p, div').forEach((el) => el.append('\n'))
+
+          let text = clone.textContent || ''
+          if (dateStr) {
+            text = text.replace(dateRegex, '')
           }
-          const fullCommentText = currentParts.join(' ').trim()
-          if (fullCommentText) {
-            items.push({ text: fullCommentText, date: dateStr })
+          text = text
+            .replace(/report a concern/gi, '')
+            .split('\n')
+            .map((s) => s.trim())
+            .filter(Boolean)
+            .join('\n')
+            .trim()
+
+          if (text) {
+            items.push({ text, date: dateStr })
           }
-          currentParts = []
-        } else {
-          currentParts.push(line)
-        }
-      })
+        })
+      } else {
+        // Fallback line-by-line parsing on remaining text
+        const tempDiv = doc.createElement('div')
+        tempDiv.innerHTML = doc.body.innerHTML
+          .replace(/<br\s*\/?>/gi, '\n')
+          .replace(/<\/(p|div|tr|td|li|h\d)>/gi, '\n')
+
+        const rawText = tempDiv.textContent || ''
+        const lines = rawText.split('\n').map((s) => s.trim()).filter(Boolean)
+        const dateRegexGlobal = /\d{2}\/\d{2}\/\d{4}\s+\d{1,2}:\d{2}\s*(?:[AP]\.?M\.?)/gi
+
+        let currentParts = []
+        lines.forEach((line) => {
+          if (/student comments/i.test(line) || /total comments/i.test(line)) return
+          if (/^term:\s*/i.test(line) || /^course\(s\):\s*/i.test(line) || /^instructor\(s\):\s*/i.test(line) || /^enrolled:\s*/i.test(line) || /go to course eval/i.test(line)) return
+
+          const dateMatch = line.match(dateRegexGlobal)
+          if (dateMatch) {
+            const dateStr = dateMatch[0]
+            const remaining = line.replace(dateRegexGlobal, '').trim()
+            if (remaining) {
+              currentParts.push(remaining)
+            }
+            const fullCommentText = currentParts.join('\n').trim()
+            if (fullCommentText) {
+              items.push({ text: fullCommentText, date: dateStr })
+            }
+            currentParts = []
+          } else {
+            currentParts.push(line)
+          }
+        })
+      }
 
       if (items.length > 0) {
         let formattedHtml = `<div class="comments-container">`
@@ -769,8 +806,16 @@ function App() {
 
         formattedHtml += `<div class="comments-list">`
         items.forEach((item) => {
+          const escapedText = item.text
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#039;')
+            .replace(/\n/g, '<br/>')
+
           formattedHtml += `<div class="comment-card">`
-          formattedHtml += `<div class="comment-text">${item.text}</div>`
+          formattedHtml += `<div class="comment-text">${escapedText}</div>`
           formattedHtml += `<div class="comment-date">${item.date}</div>`
           formattedHtml += `</div>`
         })
@@ -782,7 +827,7 @@ function App() {
       console.error('Error formatting comments:', err)
     }
 
-    return cleaned
+    return ''
   }
 
   const renderCharts = (charts, is3x3 = false) => {
