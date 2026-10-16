@@ -15,10 +15,18 @@ from tqdm import tqdm
 
 ESTHER_BASE_URL = "https://esther.rice.edu"
 SYLLABUS_URL = "https://esther.rice.edu/selfserve/!bwzkpsyl.v_viewDoc?type=SYLLABUS"
-DEFAULT_CSV_PATH = "../data/syllabus_list.csv"
-DEFAULT_OUTPUT_DIR = "../data/syllabi"
+REPO_ROOT = Path(__file__).resolve().parent.parent
+DEFAULT_CSV_PATH = REPO_ROOT / "data" / "syllabus_list.csv"
+DEFAULT_OUTPUT_DIR = REPO_ROOT / "data" / "syllabi"
 MAX_WORKERS = 10
 DEFAULT_DELAY = 0.25
+
+
+def resolve_output_dir(output_dir: str | Path) -> Path:
+    path = Path(output_dir)
+    if not path.is_absolute():
+        path = REPO_ROOT / path
+    return path.resolve()
 
 
 def detect_file_extension(content: bytes, content_type: Optional[str] = None) -> str:
@@ -152,6 +160,7 @@ class AuthError(Exception):
     pass
 
 def download_syllabus(term: str, crn: str, session: r.Session, output_dir: Path, no_skip: bool, delay: float) -> tuple:
+    output_dir = resolve_output_dir(output_dir)
     term_dir = output_dir / term
     term_dir.mkdir(parents=True, exist_ok=True)
     
@@ -160,7 +169,7 @@ def download_syllabus(term: str, crn: str, session: r.Session, output_dir: Path,
     if not no_skip:
         for ext in ["pdf", "docx", "doc", "txt", "rtf", "html"]:
             existing_file = term_dir / f"{crn}.{ext}"
-            if existing_file.exists() and existing_file.stat().st_size > 512:
+            if existing_file.exists() and existing_file.is_file():
                 return "skipped", str(existing_file)
 
     url = f"{SYLLABUS_URL}&term={term}&crn={crn}"
@@ -228,11 +237,16 @@ def main():
         print(f"Error: CSV file '{args.csv}' not found.")
         sys.exit(1)
 
-    with open(args.csv, "r") as f:
+    csv_path = Path(args.csv)
+    if not csv_path.is_absolute():
+        csv_path = REPO_ROOT / csv_path
+    output_dir = resolve_output_dir(args.output_dir)
+
+    with open(csv_path, "r") as f:
         lines = [line.strip().split(",") for line in f if line.strip()]
 
     items = [(parts[0], parts[1]) for parts in lines if len(parts) >= 2]
-    print(f"Loaded {len(items)} courses from {args.csv}.")
+    print(f"Loaded {len(items)} courses from {csv_path}.")
 
     if args.cookie_str:
         session = r.Session()
@@ -263,7 +277,7 @@ def main():
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=args.threads) as executor:
         future_to_item = {
-            executor.submit(download_syllabus, term, crn, session, Path(args.output_dir), args.no_skip, args.delay): (term, crn)
+            executor.submit(download_syllabus, term, crn, session, output_dir, args.no_skip, args.delay): (term, crn)
             for term, crn in items
         }
 

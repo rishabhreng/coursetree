@@ -172,6 +172,7 @@ def get_all_courses_for_term(term_code: str, sql_db_path=None) -> DataFrame:
                 "prerequisites": prerequisites,
                 "distribution": distribution,
                 "credits": credits,
+                "course_page": course_page,
             }
         )
 
@@ -218,7 +219,19 @@ def get_instructors_for_term(term_code: str, sql_db_path=None) -> DataFrame:
 
 def construct_db(sql_db_path: str):
     term_codes = get_term_codes(sql_db_path=sql_db_path)["code"]
+    existing_tables = set()
+    if os.path.exists(sql_db_path):
+        con = sql.connect(sql_db_path)
+        cur = con.cursor()
+        cur.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'courses_%'"
+        )
+        existing_tables = {row[0] for row in cur.fetchall()}
+        con.close()
+
     for term_code in tqdm(term_codes):
+        if f"courses_{term_code}" in existing_tables:
+            continue
         get_subject_codes_for_term(term_code, sql_db_path=sql_db_path)
         get_school_codes_for_term(term_code, sql_db_path=sql_db_path)
         get_instructors_for_term(term_code, sql_db_path=sql_db_path)
@@ -265,10 +278,18 @@ def build_fts_index(sql_db_path: str):
         # Populate FTS table from all course tables
         total_inserted = 0
         for table in sorted(tables):
+            cur.execute(f"PRAGMA table_info({table})")
+            columns = [row[1] for row in cur.fetchall()]
+            if "course_page" in columns:
+                course_page_select = "course_page"
+            else:
+                term_code = table.replace("courses_", "")
+                course_page_select = f"'{COURSE_CONSTRUCTOR_URL}&p_crn=' || crn || '&p_term={term_code}'"
+
             cur.execute(
                 f"""
                 INSERT INTO global_search (term, crn, crs, section, title, instructors, meeting_times, prerequisites, distribution, credits, course_page)
-                SELECT ?, crn, crs, section, title, instructors, meeting_times, prerequisites, distribution, credits, course_page FROM {table}
+                SELECT ?, crn, crs, section, title, instructors, meeting_times, prerequisites, distribution, credits, {course_page_select} FROM {table}
             """,
                 (table,),
             )
@@ -316,9 +337,6 @@ if __name__ == "__main__":
     final_db = os.path.join(BASE_DB_DIR, "main.db")
     temp_db = os.path.join(BASE_DB_DIR, "main.db.tmp")
 
-    if os.path.exists(temp_db):
-        os.remove(temp_db)
-
     try:
         construct_db(temp_db)
         build_fts_index(temp_db)
@@ -327,5 +345,5 @@ if __name__ == "__main__":
         print(f"Swapped updated database into {final_db}")
     except Exception:
         if os.path.exists(temp_db):
-            os.remove(temp_db)
+            print(f"Preserving {temp_db} to allow resuming without losing scraped data.")
         raise
