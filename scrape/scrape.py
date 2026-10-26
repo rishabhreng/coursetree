@@ -1,22 +1,26 @@
-from calendar import c
-import os
-import time
-
-import bs4
-import requests as r
-from xml.etree import ElementTree as ET
-import pandas as pd
-from pandas import DataFrame
-import sqlite3 as sql
+import argparse
 import json
+import os
+import sqlite3 as sql
+import threading
+import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from typing import List, Optional
+from xml.etree import ElementTree as ET
+
+from pandas import DataFrame
+import requests as r
 from tqdm import tqdm
 
 META_COURSES_URL = "https://courses.rice.edu/courses/!SWKSCAT.info"
 BASE_COURSES_URL = "https://courses.rice.edu/admweb/!SWKSECX.main"
 COURSE_CONSTRUCTOR_URL = "https://courses.rice.edu/courses/courses/!SWKSCAT.cat?p_action=COURSE"
-BASE_GA_URL = "https://ga.rice.edu"
 
-BASE_DB_DIR = os.path.dirname(os.path.abspath(__file__))
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+DATA_DIR = os.path.abspath(os.path.join(BASE_DIR, "..", "data"))
+BASE_DB_DIR = DATA_DIR if os.path.exists(DATA_DIR) else BASE_DIR
+
+_db_lock = threading.Lock()
 
 
 def _request_xml(url: str, timeout: int = 15, attempts: int = 5):
@@ -30,168 +34,59 @@ def _request_xml(url: str, timeout: int = 15, attempts: int = 5):
             last_exc = e
             if attempt == attempts:
                 raise
-            print(
-                f"Request failed ({attempt}/{attempts}) for {url}: {e}. "
-                f"Retrying in 10s..."
-            )
+            print(f"Request failed ({attempt}/{attempts}) for {url}: {e}. Retrying in 10s...")
             time.sleep(10)
 
     raise last_exc
 
 
 def _export_sql(df: DataFrame, table_name: str, sql_db_path: str):
-    try:
-        con = sql.connect(sql_db_path)
-        df.to_sql(name=table_name, con=con, if_exists="replace", index=False)
-    except ValueError as e:
-        print(e)
-    finally:
-        con.commit()
-        con.close()
+    with _db_lock:
+        con = sql.connect(sql_db_path, timeout=60.0)
+        try:
+            df.to_sql(name=table_name, con=con, if_exists="replace", index=False)
+            con.commit()
+        finally:
+            con.close()
 
 
 def get_term_codes(sql_db_path=None) -> DataFrame:
-    # entries look like Fall Semester 2026 | 202710
     terms = _request_xml(f"{META_COURSES_URL}?action=TERMS", timeout=15).findall("TERM")
-    df = []
-
-    for term in terms:
-        # ignore quadmesters since they are only for the Glasscock school, not undergraduate
-        if "Quadmester" not in term.find("OPT").tail:
-            df.append({"term": term.find("OPT").tail, "code": term.attrib.get("code")})
-
+    df = [
+        {"term": term.find("OPT").tail, "code": term.attrib.get("code")}
+        for term in terms
+        if "Quadmester" not in (term.find("OPT").tail or "")
+    ]
+    res_df = DataFrame(df)
     if sql_db_path:
-        _export_sql(DataFrame(df), "terms", sql_db_path)
-
-    return DataFrame(df)
+        _export_sql(res_df, "terms", sql_db_path)
+    return res_df
 
 
 def get_subject_codes_for_term(term_code: str, sql_db_path=None) -> DataFrame:
-    # entries look like "Computer Science | COMP"
-    # all subject codes are 4 letters
     subjects = _request_xml(
         f"{META_COURSES_URL}?action=SUBJECTS&term={term_code}", timeout=15
     ).findall("SUBJECT")
-    df = []
-
-    for subject in subjects:
-        df.append({"subject": subject.find("OPT").tail, "code": subject.attrib.get("code")})
-
-    df = DataFrame(df)
-
+    df = DataFrame([
+        {"subject": s.find("OPT").tail, "code": s.attrib.get("code")}
+        for s in subjects
+    ])
     if sql_db_path:
         _export_sql(df, f"subjects_{term_code}", sql_db_path)
-
     return df
 
 
 def get_school_codes_for_term(term_code: str, sql_db_path=None) -> DataFrame:
-    # entries look like "School of Engineering and Computing | EN"
-    # all school codes are 2 letters
     schools = _request_xml(
         f"{META_COURSES_URL}?action=SCHOOLS&term={term_code}", timeout=15
     ).findall("SCHOOL")
-    df = []
-
-    for school in schools:
-        df.append({"school": school.find("OPT").tail, "code": school.attrib.get("code")})
-
-    df = DataFrame(df)
+    df = DataFrame([
+        {"school": s.find("OPT").tail, "code": s.attrib.get("code")}
+        for s in schools
+    ])
     if sql_db_path:
         _export_sql(df, f"schools_{term_code}", sql_db_path)
-
     return df
-
-
-def _convert_time_to_human_readable(time_str: str) -> str:
-    # time string in format "HHMM" in 24-hour time
-    hh = int(time_str[:2])
-    mm = time_str[2:]
-    am_pm = "AM" if hh < 12 else "PM"
-    hh = hh % 12
-    hh = 12 if hh == 0 else hh
-    return f"{hh}:{mm} {am_pm}"
-
-
-def get_all_courses_for_term(term_code: str, sql_db_path=None) -> DataFrame:
-    courses = _request_xml(f"{BASE_COURSES_URL}?term={term_code}", timeout=60).findall("course")
-
-    df = []
-
-    for course in courses:
-        crn = course.find("crn").text
-        subject = course.find("subject").text
-        course_number = course.find("course-number").text
-        crs = f"{subject} {course_number}"
-        title = course.find("title").text
-
-        try:
-            instructors = [instructor.strip() for instructor in course.find("instructor").text.split(";")]
-        except Exception:
-            instructors = []
-
-        try:
-            meeting_days = [day.strip() for day in course.find("meeting-days").text.split(", ")]
-            _start_time = [
-                _convert_time_to_human_readable(time.strip())
-                for time in course.find("start-time").text.split(", ")
-            ]
-            _end_time = [
-                _convert_time_to_human_readable(time.strip())
-                for time in course.find("end-time").text.split(", ")
-            ]
-
-            if len(meeting_days) == 1:
-                meeting_days[0] = f"{_start_time[0]}-{_end_time[0]} {meeting_days[0]}"
-            else:
-                for i in range(len(meeting_days)):
-                    meeting_days[i] = f"{_start_time[i]}-{_end_time[i]} {meeting_days[i]}"
-        except Exception:
-            meeting_days = []
-
-        try:
-            distribution = course.find("distribution-group").text
-        except Exception:
-            distribution = ""
-        section = course.find("section").text
-        try:
-            prerequisites = course.find("pre-requisites").text
-        except Exception:
-            prerequisites = ""
-        credits = course.find("credit-hours").text
-        course_page = f"{COURSE_CONSTRUCTOR_URL}&p_crn={crn}&p_term={term_code}"
-
-        df.append(
-            {
-                "crn": crn,
-                "crs": crs,
-                "section": section,
-                "title": title,
-                "instructors": json.dumps(instructors),
-                "meeting_times": json.dumps(meeting_days),
-                "prerequisites": prerequisites,
-                "distribution": distribution,
-                "credits": credits,
-                "course_page": course_page,
-            }
-        )
-
-    df = DataFrame(df)
-    if sql_db_path:
-        _export_sql(df, f"courses_{term_code}", sql_db_path)
-
-    return df
-
-# unused
-def get_programs() -> DataFrame:
-    req = r.get(f"{BASE_GA_URL}/programs-study/", timeout=15)
-    parser = bs4.BeautifulSoup(req.text, "html.parser")
-    df = []
-    # find ul content with tag "class"="sitemap"
-    programs = parser.find("div", class_="sitemap").find_all("li")
-    for program in programs:
-        df.append({"program": program.text, "url": program.a["href"]})
-    return DataFrame(df)
 
 
 def get_instructors_for_term(term_code: str, sql_db_path=None) -> DataFrame:
@@ -199,83 +94,171 @@ def get_instructors_for_term(term_code: str, sql_db_path=None) -> DataFrame:
         f"https://esther.rice.edu/selfserve/!swkscmp.ajax?p_data=INSTRUCTORS&p_term={term_code}",
         timeout=15,
     ).findall("INSTRUCTOR")
-    df = []
-
-    for instructor in instructors:
-        df.append(
-            {
-                "name": instructor.attrib.get("NAME", ""),
-                "id": instructor.attrib.get("WEBID", "0"),
-            }
-        )
-
-    df = DataFrame(df)
-
+    df = DataFrame([
+        {"name": i.attrib.get("NAME", ""), "id": i.attrib.get("WEBID", "0")}
+        for i in instructors
+    ])
     if sql_db_path and not df.empty:
         _export_sql(df, f"instructors_{term_code}", sql_db_path)
-
     return df
 
 
-def construct_db(sql_db_path: str):
-    term_codes = get_term_codes(sql_db_path=sql_db_path)["code"]
-    existing_tables = set()
-    if os.path.exists(sql_db_path):
+def _convert_time_to_human_readable(time_str: str) -> str:
+    hh = int(time_str[:2])
+    mm = time_str[2:]
+    am_pm = "AM" if hh < 12 else "PM"
+    hh = 12 if hh == 0 else hh % 12
+    return f"{hh}:{mm} {am_pm}"
+
+
+def get_all_courses_for_term(term_code: str, sql_db_path=None) -> DataFrame:
+    courses = _request_xml(f"{BASE_COURSES_URL}?term={term_code}", timeout=60).findall("course")
+    df = []
+
+    for course in courses:
+        crn = course.findtext("crn", "").strip()
+        subject = course.findtext("subject", "").strip()
+        course_number = course.findtext("course-number", "").strip()
+        crs = f"{subject} {course_number}".strip()
+        title = course.findtext("title", "").strip()
+        section = course.findtext("section", "").strip()
+        credits = course.findtext("credit-hours", "").strip()
+        distribution = course.findtext("distribution-group", "").strip()
+        prerequisites = course.findtext("pre-requisites", "").strip()
+        description = course.findtext("description", "").strip()
+        permission = course.findtext("catalog-inst-permission", "").strip()
+        course_page = f"{COURSE_CONSTRUCTOR_URL}&p_crn={crn}&p_term={term_code}"
+
+        inst_str = course.findtext("instructor", "").strip()
+        instructors = [i.strip() for i in inst_str.split(";") if i.strip()] if inst_str else []
+
+        days_str = course.findtext("meeting-days", "").strip()
+        start_str = course.findtext("start-time", "").strip()
+        end_str = course.findtext("end-time", "").strip()
+        meeting_days = []
+        if days_str and start_str and end_str:
+            days = [d.strip() for d in days_str.split(", ")]
+            starts = [_convert_time_to_human_readable(t.strip()) for t in start_str.split(", ")]
+            ends = [_convert_time_to_human_readable(t.strip()) for t in end_str.split(", ")]
+            meeting_days = [f"{s}-{e} {d}" for d, s, e in zip(days, starts, ends)]
+
+        df.append({
+            "crn": crn,
+            "crs": crs,
+            "section": section,
+            "title": title,
+            "instructors": json.dumps(instructors),
+            "meeting_times": json.dumps(meeting_days),
+            "prerequisites": prerequisites,
+            "distribution": distribution,
+            "credits": credits,
+            "course_page": course_page,
+            "description": description,
+            "permission": permission,
+        })
+
+    df = DataFrame(df)
+    if sql_db_path:
+        _export_sql(df, f"courses_{term_code}", sql_db_path)
+    return df
+
+
+def scrape_term(term_code: str, sql_db_path: str):
+    get_subject_codes_for_term(term_code, sql_db_path=sql_db_path)
+    get_school_codes_for_term(term_code, sql_db_path=sql_db_path)
+    get_instructors_for_term(term_code, sql_db_path=sql_db_path)
+    get_all_courses_for_term(term_code, sql_db_path=sql_db_path)
+
+
+def construct_db(
+    sql_db_path: str,
+    term_codes_to_scrape: Optional[List[str]] = None,
+    max_workers: int = 4,
+    force: bool = False,
+):
+    if term_codes_to_scrape is None:
+        term_codes = list(get_term_codes(sql_db_path=sql_db_path)["code"])
+    else:
+        term_codes = term_codes_to_scrape
+
+    existing_terms = set()
+    if os.path.exists(sql_db_path) and not force:
         con = sql.connect(sql_db_path)
         cur = con.cursor()
         cur.execute(
             "SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'courses_%'"
         )
-        existing_tables = {row[0] for row in cur.fetchall()}
+        existing_terms = {row[0].replace("courses_", "") for row in cur.fetchall()}
+
+        cur.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name = 'global_search'"
+        )
+        if cur.fetchone():
+            cur.execute("SELECT DISTINCT term FROM global_search")
+            existing_terms.update(
+                {row[0].replace("courses_", "") for row in cur.fetchall() if row[0]}
+            )
         con.close()
 
-    for term_code in tqdm(term_codes):
-        if f"courses_{term_code}" in existing_tables:
-            continue
-        get_subject_codes_for_term(term_code, sql_db_path=sql_db_path)
-        get_school_codes_for_term(term_code, sql_db_path=sql_db_path)
-        get_instructors_for_term(term_code, sql_db_path=sql_db_path)
-        get_all_courses_for_term(term_code, sql_db_path=sql_db_path)
+    pending_terms = [t for t in term_codes if t not in existing_terms]
+    if not pending_terms:
+        print("All requested terms already exist in the database.")
+        return
+
+    print(f"Scraping {len(pending_terms)} term(s) with {max_workers} worker(s)...")
+    if max_workers <= 1:
+        for term_code in tqdm(pending_terms, desc="Scraping terms"):
+            scrape_term(term_code, sql_db_path=sql_db_path)
+    else:
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            futures = {
+                executor.submit(scrape_term, term_code, sql_db_path): term_code
+                for term_code in pending_terms
+            }
+            with tqdm(total=len(pending_terms), desc="Scraping terms") as pbar:
+                for future in as_completed(futures):
+                    future.result()
+                    pbar.update(1)
 
 
 def build_fts_index(sql_db_path: str):
-    """Build the global_search FTS5 virtual table from all course tables."""
-    print("Building global_search FTS5 index...")
+    """Build or update the global_search FTS5 virtual table from all new courses tables."""
+    print("Building / updating global_search FTS5 index...")
     con = sql.connect(sql_db_path)
     cur = con.cursor()
 
     try:
-        # Drop existing FTS table if it exists
-        cur.execute("DROP TABLE IF EXISTS global_search")
-        print("Dropped existing global_search table")
+        cur.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name = 'global_search'"
+        )
+        table_exists = cur.fetchone() is not None
 
-        # Create FTS5 virtual table
-        cur.execute("""
-            CREATE VIRTUAL TABLE global_search USING fts5(
-                term,
-                crn,
-                crs,
-                section,
-                title,
-                instructors,
-                meeting_times,
-                prerequisites,
-                distribution,
-                credits,
-                course_page
-            )
-        """)
+        if not table_exists:
+            cur.execute("""
+                CREATE VIRTUAL TABLE global_search USING fts5(
+                    term,
+                    crn,
+                    crs,
+                    section,
+                    title,
+                    instructors,
+                    meeting_times,
+                    prerequisites,
+                    distribution,
+                    credits,
+                    course_page,
+                    description,
+                    permission
+                )
+            """)
+            print("Created global_search FTS5 table")
 
-        print("Created global_search FTS5 table")
-
-        # Get all course term tables
         cur.execute(
             "SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'courses_%'"
         )
         tables = [row[0] for row in cur.fetchall()]
-        print(f"Found {len(tables)} course term table(s)")
+        print(f"Found {len(tables)} course term table(s) to index")
 
-        # Populate FTS table from all course tables
         total_inserted = 0
         for table in sorted(tables):
             cur.execute(f"PRAGMA table_info({table})")
@@ -286,19 +269,25 @@ def build_fts_index(sql_db_path: str):
                 term_code = table.replace("courses_", "")
                 course_page_select = f"'{COURSE_CONSTRUCTOR_URL}&p_crn=' || crn || '&p_term={term_code}'"
 
+            desc_select = "description" if "description" in columns else "''"
+            perm_select = "permission" if "permission" in columns else "''"
+
+            if table_exists:
+                cur.execute("DELETE FROM global_search WHERE term = ?", (table,))
+
             cur.execute(
                 f"""
-                INSERT INTO global_search (term, crn, crs, section, title, instructors, meeting_times, prerequisites, distribution, credits, course_page)
-                SELECT ?, crn, crs, section, title, instructors, meeting_times, prerequisites, distribution, credits, {course_page_select} FROM {table}
+                INSERT INTO global_search (term, crn, crs, section, title, instructors, meeting_times, prerequisites, distribution, credits, course_page, description, permission)
+                SELECT ?, crn, crs, section, title, instructors, meeting_times, prerequisites, distribution, credits, {course_page_select}, {desc_select}, {perm_select} FROM {table}
             """,
                 (table,),
             )
             rows_inserted = cur.rowcount
             total_inserted += rows_inserted
-            print(f"  Inserted {rows_inserted} rows from {table}")
+            print(f"  Indexed {rows_inserted} rows from {table}")
 
         con.commit()
-        print(f"✓ Successfully built global_search FTS index with {total_inserted} total rows")
+        print(f"✓ Successfully indexed {total_inserted} total rows into global_search")
 
     except Exception as e:
         print(f"✗ Error building FTS index: {e}")
@@ -334,16 +323,58 @@ def drop_courses_tables(sql_db_path: str):
 
 
 if __name__ == "__main__":
-    final_db = os.path.join(BASE_DB_DIR, "main.db")
+    parser = argparse.ArgumentParser(description="Scrape Rice course catalog into main.db")
+    parser.add_argument(
+        "--full",
+        action="store_true",
+        help="Scrape all terms from scratch (replaces existing main.db)",
+    )
+    parser.add_argument(
+        "--workers",
+        type=int,
+        default=4,
+        help="Number of concurrent worker threads (default: 4)",
+    )
+    parser.add_argument(
+        "--terms",
+        type=str,
+        default=None,
+        help="Specific comma-separated term codes to scrape (e.g. 202410,202420)",
+    )
+    parser.add_argument(
+        "--db",
+        type=str,
+        default=None,
+        help="Path to main.db (defaults to data/main.db)",
+    )
+    args = parser.parse_args()
+
+    final_db = os.path.abspath(args.db) if args.db else os.path.join(BASE_DB_DIR, "main.db")
     temp_db = os.path.join(BASE_DB_DIR, "main.db.tmp")
+    terms_list = [t.strip() for t in args.terms.split(",") if t.strip()] if args.terms else None
+
+    if args.full:
+        if os.path.exists(temp_db):
+            os.remove(temp_db)
+        target_db = temp_db
+    else:
+        target_db = final_db
 
     try:
-        construct_db(temp_db)
-        build_fts_index(temp_db)
-        drop_courses_tables(temp_db)
-        os.replace(temp_db, final_db)
-        print(f"Swapped updated database into {final_db}")
+        construct_db(
+            target_db,
+            term_codes_to_scrape=terms_list,
+            max_workers=args.workers,
+            force=args.full,
+        )
+        build_fts_index(target_db)
+        drop_courses_tables(target_db)
+        if args.full:
+            os.replace(temp_db, final_db)
+            print(f"Swapped fresh database into {final_db}")
+        else:
+            print(f"Updated database at {final_db}")
     except Exception:
-        if os.path.exists(temp_db):
+        if args.full and os.path.exists(temp_db):
             print(f"Preserving {temp_db} to allow resuming without losing scraped data.")
         raise

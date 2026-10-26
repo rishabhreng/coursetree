@@ -1,13 +1,10 @@
 import json
 import re
-from typing import List, Optional
-from xml.etree import ElementTree as ET
+import sqlite3 as sql
 
-from fastapi import FastAPI, HTTPException, Depends, Query
+from fastapi import FastAPI, HTTPException, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
-import sqlite3 as sql
-import requests as r
 
 from fetch_utils import (
     SYLLABI_DIR,
@@ -17,7 +14,6 @@ from fetch_utils import (
 )
 
 from search_utils import (
-    CoursesResponse,
     clean_query,
     convert_to_fts_query,
     group_courses,
@@ -38,8 +34,6 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-SUBJECT_NAMES = {}
 
 
 @app.get("/api/courses/")
@@ -146,7 +140,7 @@ def search_courses(
         sql_query = f"""
             WITH RawFTS AS (
                 SELECT *, 
-                       bm25(global_search, 0.0, 5.0, 10.0, 0.0, 5.0, 2.0, 0.0, 0.2, 0.0, 0.0, 0.0) as search_rank 
+                       bm25(global_search, 0.0, 5.0, 10.0, 0.0, 5.0, 2.0, 0.0, 0.2, 0.0, 0.0, 0.0, 0.5, 0.0) as search_rank 
                 FROM global_search
                 {where_clause}
             ),

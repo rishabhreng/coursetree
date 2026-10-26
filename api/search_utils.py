@@ -71,28 +71,9 @@ class Course(BaseModel):
     credits: Optional[str] = None
     course_page: Optional[str] = None
     distribution: Optional[str] = None
-
-
-class Term(BaseModel):
-    code: str
-    term: str
-
-
-class Subject(BaseModel):
-    code: str
-    subject: str
-
-
-class SyllabusResponse(BaseModel):
-    syllabus_url: Optional[str] = None
-    file_type: Optional[str] = None
-    filename: Optional[str] = None
-    message: str
-
-
-class LoginRequest(BaseModel):
-    netid: str
-    password: str
+    description: Optional[str] = None
+    permission: Optional[str] = None
+    prerequisites: Optional[str] = None
 
 
 CoursesResponse = Dict[str, List[Course]]
@@ -127,7 +108,7 @@ def clean_query(q: str) -> str:
 def row_to_course(row: sql.Row) -> Course:
     row_dict = dict(row)
     term_value = row_dict.get("term", "")
-    term_code = term_value.split("courses_", 1)[1]
+    term_code = term_value.split("courses_", 1)[1] if "courses_" in term_value else term_value
 
     data = {
         "term": term_code,
@@ -139,6 +120,9 @@ def row_to_course(row: sql.Row) -> Course:
         "credits": row_dict.get("credits"),
         "course_page": row_dict.get("course_page"),
         "distribution": row_dict.get("distribution"),
+        "description": row_dict.get("description"),
+        "permission": row_dict.get("permission"),
+        "prerequisites": row_dict.get("prerequisites"),
     }
     return Course(**data)
 
