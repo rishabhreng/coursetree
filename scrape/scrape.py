@@ -103,12 +103,19 @@ def get_instructors_for_term(term_code: str, sql_db_path=None) -> DataFrame:
     return df
 
 
-def _convert_time_to_human_readable(time_str: str) -> str:
+def _convert_time_to_human_readable(time_str: str) -> Optional[str]:
+    time_str = time_str.strip()
+    if len(time_str) != 4 or not time_str.isdigit():
+        return None
+
     hh = int(time_str[:2])
-    mm = time_str[2:]
+    mm = int(time_str[2:])
+    if hh > 23 or mm > 59:
+        return None
+
     am_pm = "AM" if hh < 12 else "PM"
-    hh = 12 if hh == 0 else hh % 12
-    return f"{hh}:{mm} {am_pm}"
+    hh = hh % 12 or 12
+    return f"{hh}:{mm:02d} {am_pm}"
 
 
 def get_all_courses_for_term(term_code: str, sql_db_path=None) -> DataFrame:
@@ -137,10 +144,19 @@ def get_all_courses_for_term(term_code: str, sql_db_path=None) -> DataFrame:
         end_str = course.findtext("end-time", "").strip()
         meeting_days = []
         if days_str and start_str and end_str:
-            days = [d.strip() for d in days_str.split(", ")]
-            starts = [_convert_time_to_human_readable(t.strip()) for t in start_str.split(", ")]
-            ends = [_convert_time_to_human_readable(t.strip()) for t in end_str.split(", ")]
-            meeting_days = [f"{s}-{e} {d}" for d, s, e in zip(days, starts, ends)]
+            days = [d.strip() for d in days_str.split(",")]
+            starts = [t.strip() for t in start_str.split(",")]
+            ends = [t.strip() for t in end_str.split(",")]
+            for index, (day, start, end) in enumerate(zip(days, starts, ends)):
+                start_time = _convert_time_to_human_readable(start)
+                end_time = _convert_time_to_human_readable(end)
+                if not day or start_time is None or end_time is None:
+                    print(
+                        f"Skipping malformed meeting time for {crs} "
+                        f"(term {term_code}, entry {index + 1})"
+                    )
+                    continue
+                meeting_days.append(f"{start_time}-{end_time} {day}")
 
         df.append({
             "crn": crn,
@@ -228,10 +244,33 @@ def build_fts_index(sql_db_path: str):
     cur = con.cursor()
 
     try:
+        fts_columns = [
+            "term",
+            "crn",
+            "crs",
+            "section",
+            "title",
+            "instructors",
+            "meeting_times",
+            "prerequisites",
+            "distribution",
+            "credits",
+            "course_page",
+            "description",
+            "permission",
+        ]
         cur.execute(
             "SELECT name FROM sqlite_master WHERE type='table' AND name = 'global_search'"
         )
         table_exists = cur.fetchone() is not None
+
+        if table_exists:
+            cur.execute("PRAGMA table_info(global_search)")
+            existing_columns = [row[1] for row in cur.fetchall()]
+            if existing_columns != fts_columns:
+                cur.execute("DROP TABLE global_search")
+                table_exists = False
+                print("Recreated global_search FTS5 table to update its schema")
 
         if not table_exists:
             cur.execute("""
