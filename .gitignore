@@ -35,3 +35,5 @@ test.ipynb
 
 asyllabi/
 data/*
+main.db*
+*.sh
