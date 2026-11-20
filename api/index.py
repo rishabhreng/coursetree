@@ -306,7 +306,24 @@ def get_instructor_evaluation(
         (term, crn)
     )
     rows = cur.fetchall()
-    
+
+    # Cross-listed sections (e.g. ELEC 436 / MECH 420) share one evaluation,
+    # stored under only one of their CRNs.
+    if not rows:
+        try:
+            cur.execute(
+                """
+                SELECT e.instructor_name, e.instructor_id, e.html, e.charts_json
+                FROM instructor_eval_xlist x
+                JOIN instructor_evaluations e ON e.term = x.term AND e.crn = x.crn
+                WHERE x.term = ? AND x.xlist_crn = ?
+                """,
+                (term, crn),
+            )
+            rows = cur.fetchall()
+        except sql.OperationalError:
+            rows = []  # mapping table not built yet
+
     results = []
     for row in rows:
         charts_data = json.loads(row["charts_json"]) if row["charts_json"] else []

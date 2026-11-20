@@ -113,6 +113,16 @@ def init_db(db_path: str):
         """)
         cur.execute("CREATE INDEX IF NOT EXISTS idx_instructor_evals_term_crn ON instructor_evaluations(term, crn);")
         cur.execute("CREATE INDEX IF NOT EXISTS idx_instructor_evals_course_code ON instructor_evaluations(course_code);")
+        # Cross-listed sections share one evaluation, stored under a single CRN.
+        # Map each cross-listed CRN to the CRN that holds the evaluation.
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS instructor_eval_xlist (
+                term TEXT,
+                xlist_crn TEXT,
+                crn TEXT,
+                PRIMARY KEY (term, xlist_crn, crn)
+            );
+        """)
         conn.commit()
         conn.close()
     except sql.Error as e:
@@ -248,6 +258,43 @@ def scrape_instructor_eval(session: r.Session, term: str, instr_id: str) -> tupl
     except Exception as e:
         logger.error(f"Unexpected error scraping instructor {instr_id}, term {term}: {e}")
         return None, f"Request error: {str(e)}"
+
+
+XLIST_RE = re.compile(r"XList\(s\):\s*</td>\s*<td[^>]*>(.*?)</td>", re.S)
+
+
+def parse_xlist_crns(html_text: str) -> List[str]:
+    """Return CRNs from a section's "XList(s): ELEC 436 002 (25860), ..." header row."""
+    m = XLIST_RE.search(html_text or "")
+    return re.findall(r"\((\d+)\)", m.group(1)) if m else []
+
+
+def save_xlist(cur, term: str, crn: str, html_text: str):
+    for xcrn in parse_xlist_crns(html_text):
+        if xcrn != crn:
+            cur.execute(
+                "INSERT OR IGNORE INTO instructor_eval_xlist (term, xlist_crn, crn) VALUES (?, ?, ?)",
+                (term, xcrn, crn),
+            )
+
+
+def backfill_xlist(db_path: str):
+    """Populate instructor_eval_xlist from evaluation HTML already in the database."""
+    conn = sql.connect(db_path)
+    read_cur = conn.cursor()
+    write_cur = conn.cursor()
+    read_cur.execute(
+        "SELECT term, crn, substr(html, instr(html, 'XList(s):'), 2000) "
+        "FROM instructor_evaluations WHERE instr(html, 'XList(s):') > 0"
+    )
+    rows = 0
+    for term, crn, snippet in read_cur.fetchall():
+        save_xlist(write_cur, term, crn, snippet)
+        rows += 1
+    conn.commit()
+    total = conn.execute("SELECT count(*) FROM instructor_eval_xlist").fetchone()[0]
+    conn.close()
+    print(f"Backfilled cross-listings from {rows} evaluation(s); {total} mapping row(s) total.")
 
 
 def parse_instructor_page(html_text: str) -> List[Dict[str, Any]]:
@@ -443,7 +490,13 @@ def main():
     parser.add_argument("--workers", type=int, default=8, help="Number of concurrent worker threads.")
     parser.add_argument("--netid", type=str, default=None, help="Rice NetID.")
     parser.add_argument("--password", type=str, default=None, help="Rice Password.")
+    parser.add_argument("--backfill-xlist", action="store_true", help="Only rebuild the cross-listed CRN mapping from stored HTML, then exit.")
     args = parser.parse_args()
+
+    if args.backfill_xlist:
+        init_db(INSTRUCTOR_EVALS_DB_PATH)
+        backfill_xlist(INSTRUCTOR_EVALS_DB_PATH)
+        return
 
     LOG_PATH = os.path.join(BASE_DIR, "scrape_instructor_evals.log")
     logging.basicConfig(
@@ -526,6 +579,7 @@ def main():
                                 term, sec["crn"], sec["subject"], sec["course_code"], sec["title"],
                                 instr_id, instr_name, sec["html"], sec["charts_json"]
                             ))
+                            save_xlist(cur, term, sec["crn"], sec["html"])
                         conn.commit()
                         success_count += 1
                         section_count += len(sections)
