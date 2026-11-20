@@ -997,7 +997,8 @@ function App() {
     }
   }
 
-  const courseEntries = Object.entries(results).sort()
+  // Preserve the backend's relevance ordering (don't re-sort alphabetically)
+  const courseEntries = Object.entries(results)
 
   const getSyllabusKey = (course) => `${course.term}-${course.crn}`
 

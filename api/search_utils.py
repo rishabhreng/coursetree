@@ -93,8 +93,10 @@ def _escape_fts_prefix_token(token: str) -> str:
 def clean_query(q: str) -> str:
     """Utility function to clean and standardize the search query"""
     q = q.strip().upper()  # Normalize whitespace
-    q = re.sub(r"\.", "", q)
-    q = re.sub(r",", "", q)
+    # Treat punctuation as a separator (matching the FTS5 tokenizer) so that
+    # initials like "K.C." or "T.S." become separate tokens, not "KC"/"TS".
+    q = re.sub(r"[.,]", " ", q)
+    q = re.sub(r"\s+", " ", q).strip()
     # Expand common acronyms
     for (
         acronym,
@@ -162,10 +164,28 @@ def convert_to_fts_query(q: str) -> str:
 
     # CASE 5: General fuzzy/keyword search
     else:
-        # Replace hyphens with spaces to handle hyphenated names/terms
-        q_normalized = q.replace("-", " ")
-        words = q_normalized.split()
-        if not words:
-            return ""
-        # Standard multi-word prefix search across all columns
-        return " AND ".join([_escape_fts_prefix_token(w) for w in words])
+        return _general_fts_query(q)
+
+
+def _general_fts_words(q: str) -> List[str]:
+    # Replace hyphens with spaces to handle hyphenated names/terms
+    return q.replace("-", " ").split()
+
+
+def instructor_name_fts_query(q: str) -> Optional[str]:
+    """For multi-word general queries, an FTS query that matches only when all
+    words appear together in the instructors column (i.e. look like one name,
+    such as "Don H Johnson" or "Johnson Don H"). Returns None otherwise."""
+    if not q or convert_to_fts_query(q) != _general_fts_query(q):
+        return None  # CRN / course code / subject searches
+    words = _general_fts_words(q)
+    if len(words) < 2:
+        return None
+    tokens = " ".join(_escape_fts_prefix_token(w) for w in words)
+    return f"instructors : NEAR({tokens}, 2)"
+
+
+def _general_fts_query(q: str) -> str:
+    """Standard multi-word prefix search across all columns."""
+    words = _general_fts_words(q)
+    return " AND ".join(_escape_fts_prefix_token(w) for w in words)

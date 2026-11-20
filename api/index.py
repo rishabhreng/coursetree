@@ -1,6 +1,7 @@
 import json
 import re
 import sqlite3 as sql
+from typing import Optional
 
 from fastapi import FastAPI, HTTPException, Depends
 from fastapi.middleware.cors import CORSMiddleware
@@ -17,6 +18,7 @@ from search_utils import (
     clean_query,
     convert_to_fts_query,
     group_courses,
+    instructor_name_fts_query,
     VALID_SUBJECTS,
 )
 
@@ -38,14 +40,14 @@ app.add_middleware(
 
 @app.get("/api/courses/")
 def search_courses(
-    q = "",
-    distribution_group = None,
-    analyzing_diversity = False,
-    term_code = DEFAULT_COURSE_TERM_CODE,
-    term_start = None,
-    term_end = None,
-    top_n_results = None,
-    offset = 0,
+    q: str = "",
+    distribution_group: Optional[str] = None,
+    analyzing_diversity: bool = False,
+    term_code: str = DEFAULT_COURSE_TERM_CODE,
+    term_start: Optional[str] = None,
+    term_end: Optional[str] = None,
+    top_n_results: Optional[int] = None,
+    offset: int = 0,
     db: sql.Connection = Depends(get_db),
 ):
     try:
@@ -130,6 +132,18 @@ def search_courses(
             secondary_sort = "best_search_rank ASC"
             cte_params = []
 
+        # Queries that read as an instructor's name (e.g. "Don H Johnson") rank
+        # courses taught by that person ahead of everything else, so older
+        # instructors aren't buried under recent incidental matches
+        # (e.g. "done" in a description + a different Johnson).
+        instr_fts = instructor_name_fts_query(q_clean) if q_clean else None
+        if instr_fts:
+            instr_match_expr = "(rowid IN (SELECT rowid FROM global_search WHERE global_search MATCH ?))"
+            instr_params = [instr_fts]
+        else:
+            instr_match_expr = "0"
+            instr_params = []
+
         if top_n_results is not None and top_n_results > 0:
             rank_filter = "WHERE course_rank > ? AND course_rank <= ?"
             pagination_params = [offset, offset + top_n_results]
@@ -140,7 +154,8 @@ def search_courses(
         sql_query = f"""
             WITH RawFTS AS (
                 SELECT *, 
-                       bm25(global_search, 0.0, 5.0, 10.0, 0.0, 5.0, 2.0, 0.0, 0.2, 0.0, 0.0, 0.0, 0.5, 0.0) as search_rank 
+                       bm25(global_search, 0.0, 5.0, 10.0, 0.0, 5.0, 2.0, 0.0, 0.2, 0.0, 0.0, 0.0, 0.5, 0.0) as search_rank,
+                       {instr_match_expr} as instr_match
                 FROM global_search
                 {where_clause}
             ),
@@ -151,13 +166,17 @@ def search_courses(
                        -- Find the absolute newest term across ALL matched courses
                        MAX(CAST(REPLACE(term, 'courses_', '') AS INTEGER)) OVER () as global_max_term,
                        -- NEW: Find the best search relevance for the entire course to prevent splitting ranks
-                       MIN(search_rank) OVER (PARTITION BY crs) as best_search_rank
+                       MIN(search_rank) OVER (PARTITION BY crs) as best_search_rank,
+                       -- Whether this course was ever taught by the instructor named in the query
+                       MAX(instr_match) OVER (PARTITION BY crs) as course_instr_match
                 FROM RawFTS
             ),
             RankedCourses AS (
                 SELECT *,
                        DENSE_RANK() OVER (
                            ORDER BY 
+                               -- Instructor-name matches first (always 0 for non-name queries)
+                               course_instr_match DESC,
                                -- Primary Sort: Rolling 2-year tiers
                                ((global_max_term - course_max_term) / 200) ASC, 
                                -- Secondary Sort: Injected based on search type
@@ -173,7 +192,7 @@ def search_courses(
         """
 
         # Parameter binding order strictly follows the '?' placeholders in the query
-        params = base_params + cte_params + pagination_params
+        params = instr_params + base_params + cte_params + pagination_params
 
         # 5. Execute and return
         rows = db.cursor().execute(sql_query, tuple(params)).fetchall()
