@@ -175,7 +175,10 @@ def get_all_courses_for_term(term_code: str, sql_db_path=None) -> DataFrame:
 
     df = DataFrame(df)
     if sql_db_path:
-        _export_sql(df, f"courses_{term_code}", sql_db_path)
+        if df.empty:
+            print(f"No courses returned for term {term_code}; leaving existing data untouched.")
+        else:
+            _export_sql(df, f"courses_{term_code}", sql_db_path)
     return df
 
 
@@ -191,11 +194,22 @@ def construct_db(
     term_codes_to_scrape: Optional[List[str]] = None,
     max_workers: int = 4,
     force: bool = False,
+    refresh_recent: int = 0,
 ):
+    """Scrape terms missing from the database.
+
+    Explicitly requested terms (term_codes_to_scrape) are always re-scraped,
+    as are the `refresh_recent` newest catalog terms, so that corrections to
+    the Rice catalog get picked up without a full rebuild.
+    """
+    refresh_terms = set()
     if term_codes_to_scrape is None:
         term_codes = list(get_term_codes(sql_db_path=sql_db_path)["code"])
+        if refresh_recent > 0:
+            refresh_terms = set(sorted(term_codes, reverse=True)[:refresh_recent])
     else:
         term_codes = term_codes_to_scrape
+        refresh_terms = set(term_codes_to_scrape)
 
     existing_terms = set()
     if os.path.exists(sql_db_path) and not force:
@@ -216,11 +230,14 @@ def construct_db(
             )
         con.close()
 
-    pending_terms = [t for t in term_codes if t not in existing_terms]
+    pending_terms = [t for t in term_codes if t not in existing_terms or t in refresh_terms]
     if not pending_terms:
         print("All requested terms already exist in the database.")
         return
 
+    refreshing = sorted(t for t in pending_terms if t in existing_terms)
+    if refreshing:
+        print(f"Refreshing existing term(s): {', '.join(refreshing)}")
     print(f"Scraping {len(pending_terms)} term(s) with {max_workers} worker(s)...")
     if max_workers <= 1:
         for term_code in tqdm(pending_terms, desc="Scraping terms"):
@@ -237,7 +254,33 @@ def construct_db(
                     pbar.update(1)
 
 
-def build_fts_index(sql_db_path: str):
+FTS_DIFF_COLUMNS = [
+    "crs", "section", "title", "instructors", "meeting_times", "prerequisites",
+    "distribution", "credits", "description", "permission",
+]
+
+
+def _summarize_term_changes(cur, table: str, columns: List[str]):
+    """Print added/removed/changed sections between global_search and a fresh courses table."""
+    cols = [c for c in FTS_DIFF_COLUMNS if c in columns]
+    sel = ", ".join(cols)
+    old = {row[0]: row[1:] for row in cur.execute(
+        f"SELECT crn, {sel} FROM global_search WHERE term = ?", (table,))}
+    new = {str(row[0]): row[1:] for row in cur.execute(f"SELECT crn, {sel} FROM {table}")}
+    added = new.keys() - old.keys()
+    removed = old.keys() - new.keys()
+    changed = [crn for crn in new.keys() & old.keys()
+               if tuple("" if v is None else str(v) for v in new[crn])
+               != tuple("" if v is None else str(v) for v in old[crn])]
+    print(f"  {table}: {len(added)} added, {len(removed)} removed, {len(changed)} changed")
+    for crn in sorted(changed)[:10]:
+        fields = [c for c, a, b in zip(cols, old[crn], new[crn]) if str(a or "") != str(b or "")]
+        print(f"    CRN {crn}: {', '.join(fields)}")
+    if len(changed) > 10:
+        print(f"    ... and {len(changed) - 10} more")
+
+
+def build_fts_index(sql_db_path: str, allow_shrink: bool = False):
     """Build or update the global_search FTS5 virtual table from all new courses tables."""
     print("Building / updating global_search FTS5 index...")
     con = sql.connect(sql_db_path)
@@ -312,6 +355,18 @@ def build_fts_index(sql_db_path: str):
             perm_select = "permission" if "permission" in columns else "''"
 
             if table_exists:
+                old_count = cur.execute(
+                    "SELECT count(*) FROM global_search WHERE term = ?", (table,)
+                ).fetchone()[0]
+                new_count = cur.execute(f"SELECT count(*) FROM {table}").fetchone()[0]
+                if old_count and not allow_shrink and new_count < old_count / 2:
+                    print(
+                        f"  ! Skipping {table}: re-scrape has {new_count} rows vs {old_count} "
+                        f"indexed (likely a catalog glitch). Use --allow-shrink to replace anyway."
+                    )
+                    continue
+                if old_count:
+                    _summarize_term_changes(cur, table, columns)
                 cur.execute("DELETE FROM global_search WHERE term = ?", (table,))
 
             cur.execute(
@@ -378,7 +433,18 @@ if __name__ == "__main__":
         "--terms",
         type=str,
         default=None,
-        help="Specific comma-separated term codes to scrape (e.g. 202410,202420)",
+        help="Specific comma-separated term codes to (re-)scrape, replacing existing data for them (e.g. 202410,202420)",
+    )
+    parser.add_argument(
+        "--refresh-recent",
+        type=int,
+        default=3,
+        help="Re-scrape the N newest catalog terms even if already present, to pick up catalog corrections (default: 3; 0 disables)",
+    )
+    parser.add_argument(
+        "--allow-shrink",
+        action="store_true",
+        help="Replace a term even if the re-scrape has under half its previous rows",
     )
     parser.add_argument(
         "--db",
@@ -405,8 +471,9 @@ if __name__ == "__main__":
             term_codes_to_scrape=terms_list,
             max_workers=args.workers,
             force=args.full,
+            refresh_recent=args.refresh_recent,
         )
-        build_fts_index(target_db)
+        build_fts_index(target_db, allow_shrink=args.allow_shrink)
         drop_courses_tables(target_db)
         if args.full:
             os.replace(temp_db, final_db)
