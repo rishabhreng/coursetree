@@ -173,15 +173,18 @@ def _general_fts_words(q: str) -> List[str]:
 
 
 def instructor_name_fts_query(q: str) -> Optional[str]:
-    """For multi-word general queries, an FTS query that matches only when all
-    words appear together in the instructors column (i.e. look like one name,
-    such as "Don H Johnson" or "Johnson Don H"). Returns None otherwise."""
+    """For general keyword queries, an FTS query matching the words as an
+    instructor's name: all words together in the instructors column (e.g.
+    "Don H Johnson", "Johnson Don H", or just "Cavallaro"). Returns None for
+    CRN / course code / subject searches."""
     if not q or convert_to_fts_query(q) != _general_fts_query(q):
-        return None  # CRN / course code / subject searches
+        return None
     words = _general_fts_words(q)
-    if len(words) < 2:
+    if not words:
         return None
     tokens = " ".join(_escape_fts_prefix_token(w) for w in words)
+    if len(words) == 1:
+        return f"instructors : {tokens}"
     return f"instructors : NEAR({tokens}, 2)"
 
 

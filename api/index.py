@@ -137,6 +137,18 @@ def search_courses(
         # instructors aren't buried under recent incidental matches
         # (e.g. "done" in a description + a different Johnson).
         instr_fts = instructor_name_fts_query(q_clean) if q_clean else None
+        if instr_fts and len(q_clean.replace("-", " ").split()) == 1:
+            # A single word is only treated as a name when most of its matches
+            # are in the instructors column ("Cavallaro" yes; "art", "rice" no).
+            cur = db.cursor()
+            instr_hits = cur.execute(
+                "SELECT count(*) FROM global_search WHERE global_search MATCH ?", (instr_fts,)
+            ).fetchone()[0]
+            all_hits = cur.execute(
+                "SELECT count(*) FROM global_search WHERE global_search MATCH ?", (fts_query,)
+            ).fetchone()[0]
+            if instr_hits * 2 < all_hits:
+                instr_fts = None
         if instr_fts:
             instr_match_expr = "(rowid IN (SELECT rowid FROM global_search WHERE global_search MATCH ?))"
             instr_params = [instr_fts]
@@ -180,6 +192,9 @@ def search_courses(
                                -- Primary Sort: Rolling 2-year tiers
                                ((global_max_term - course_max_term) / 200) ASC, 
                                -- Secondary Sort: Injected based on search type
+                               -- Courses taught by the named instructor: by course number
+                               CASE WHEN course_instr_match = 1
+                                    THEN CAST(SUBSTR(crs, INSTR(crs, ' ') + 1) AS INTEGER) END ASC,
                                {secondary_sort},
                                crs ASC
                        ) as course_rank
