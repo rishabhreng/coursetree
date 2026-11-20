@@ -20,6 +20,21 @@ DEFAULT_CSV_PATH = REPO_ROOT / "data" / "syllabus_list.csv"
 DEFAULT_OUTPUT_DIR = REPO_ROOT / "data" / "syllabi"
 MAX_WORKERS = 10
 DEFAULT_DELAY = 0.25
+SYLLABUS_EXTS = ["pdf", "docx", "doc", "txt", "rtf", "html"]
+
+
+def existing_syllabi(output_dir: Path) -> set:
+    """(term, crn) pairs already downloaded, from one directory listing per term."""
+    found = set()
+    if not output_dir.is_dir():
+        return found
+    for term_dir in output_dir.iterdir():
+        if term_dir.is_dir():
+            for f in term_dir.iterdir():
+                crn, _, ext = f.name.partition(".")
+                if ext in SYLLABUS_EXTS:
+                    found.add((term_dir.name, crn))
+    return found
 
 
 def resolve_output_dir(output_dir: str | Path) -> Path:
@@ -163,14 +178,14 @@ def download_syllabus(term: str, crn: str, session: r.Session, output_dir: Path,
     output_dir = resolve_output_dir(output_dir)
     term_dir = output_dir / term
     term_dir.mkdir(parents=True, exist_ok=True)
-    
-    time.sleep(delay)  # Throttle to prevent ESTHER rate-limiting/WAF blocking
 
     if not no_skip:
-        for ext in ["pdf", "docx", "doc", "txt", "rtf", "html"]:
+        for ext in SYLLABUS_EXTS:
             existing_file = term_dir / f"{crn}.{ext}"
             if existing_file.exists() and existing_file.is_file():
                 return "skipped", str(existing_file)
+
+    time.sleep(delay)  # Throttle to prevent ESTHER rate-limiting/WAF blocking
 
     url = f"{SYLLABUS_URL}&term={term}&crn={crn}"
     for attempt in range(2):
@@ -247,6 +262,15 @@ def main():
 
     items = [(parts[0], parts[1]) for parts in lines if len(parts) >= 2]
     print(f"Loaded {len(items)} courses from {csv_path}.")
+
+    if not args.no_skip:
+        have = existing_syllabi(output_dir)
+        skipped_upfront = sum(1 for it in items if it in have)
+        items = [it for it in items if it not in have]
+        print(f"{skipped_upfront} already downloaded; {len(items)} to fetch.")
+        if not items:
+            print("Nothing new to download; skipping login.")
+            return
 
     if args.cookie_str:
         session = r.Session()
