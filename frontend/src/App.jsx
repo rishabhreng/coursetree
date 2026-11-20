@@ -1141,22 +1141,7 @@ function App() {
           )}
           <div className="search-inputs">
             <div className="input-group">
-              <div className="label-with-tooltip">
-                <label htmlFor="query">Course Search</label>
-                <div className="tooltip-wrap">
-                  <button
-                    type="button"
-                    className="tooltip-trigger"
-                    aria-label="Search help"
-                    aria-describedby="query-tooltip"
-                  >
-                    ?
-                  </button>
-                  <div id="query-tooltip" role="tooltip" className="tooltip-text">
-                    Type CRN (12345), CRS (ABCD 123), course title (Intro to Life I), instructor (John Doe), or any combination.
-                  </div>
-                </div>
-              </div>
+              <label htmlFor="query">Course Search</label>
               <input
                 id="query"
                 ref={searchInputRef}
