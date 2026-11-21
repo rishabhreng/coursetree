@@ -638,6 +638,155 @@ button {
   color: var(--text-secondary);
 }
 
+.tag-perm {
+  background: rgba(245, 158, 11, 0.12);
+  border-color: rgba(245, 158, 11, 0.35);
+  color: #fcd34d;
+}
+
+/* ---------- Description & requirements ---------- */
+
+.course-info {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 0 18px 12px;
+}
+
+.course-desc-wrap {
+  max-width: 110ch;
+}
+
+.course-desc {
+  font-size: 0.88rem;
+  line-height: 1.5;
+  color: var(--text-secondary);
+}
+
+.course-desc.is-clamped {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  overflow: hidden;
+}
+
+.desc-toggle {
+  font-size: 0.82rem;
+  margin-top: 2px;
+}
+
+.course-reqs {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.req-row {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+}
+
+.req-row dt {
+  flex: 0 0 76px;
+  white-space: nowrap;
+  font-size: 0.7rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--text-tertiary);
+}
+
+.req-row dd {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+  flex: 1;
+  font-size: 0.84rem;
+}
+
+.course-chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 8px;
+  border-radius: 6px;
+  border: 1px solid rgba(147, 197, 253, 0.35);
+  background: rgba(59, 130, 246, 0.1);
+  color: var(--accent-text);
+  font-size: 0.8rem;
+  font-weight: 700;
+  white-space: nowrap;
+  transition: background 0.15s ease, border-color 0.15s ease, color 0.15s ease;
+}
+
+.course-chip:hover {
+  background: var(--accent-strong);
+  border-color: var(--accent-strong);
+  color: #ffffff;
+}
+
+.req-group {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 5px;
+  padding: 2px 6px;
+  border-radius: 8px;
+}
+
+.req-group-or {
+  border: 1px dashed rgba(255, 255, 255, 0.22);
+}
+
+.req-group-and {
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.req-sep {
+  font-size: 0.72rem;
+  font-weight: 700;
+  text-transform: lowercase;
+  color: var(--text-tertiary);
+}
+
+.req-inline {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 5px;
+}
+
+.req-lines {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.req-line {
+  display: grid;
+  grid-template-columns: 22px minmax(0, 1fr);
+  align-items: baseline;
+  column-gap: 6px;
+}
+
+.req-line > :last-child {
+  justify-self: start;
+}
+
+.req-connector {
+  font-size: 0.72rem;
+  font-weight: 700;
+  color: var(--text-tertiary);
+  text-align: right;
+}
+
+.req-raw {
+  color: var(--text-secondary);
+}
+
 .course-footer {
   display: flex;
   justify-content: center;
@@ -1130,6 +1279,19 @@ button {
   .course-summary {
     padding: 0 14px 10px;
     flex-direction: column;
+  }
+
+  .course-info {
+    padding: 0 14px 10px;
+  }
+
+  .req-row {
+    flex-direction: column;
+    gap: 4px;
+  }
+
+  .req-row dt {
+    flex: none;
   }
 
   /* Rows become stacked mini-cards. */

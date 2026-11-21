@@ -150,3 +150,53 @@ export const formatEvalHtml = (html) => {
 
   return ''
 }
+
+// ---- Prerequisites ----
+
+const PREREQ_TOKEN_RE = /[A-Z]{3,4} \d{3}[A-Z]?|\(|\)|\bAND\b|\bOR\b/g
+
+// Parses Rice prerequisite expressions such as "(MATH 101 OR MATH 105) AND COMP 140"
+// into a tree: { type: 'course', code } | { type: 'and' | 'or', items: [...] }.
+// AND binds tighter than OR. Returns null for empty or unrecognized text.
+export const parsePrereqs = (text) => {
+  const source = String(text || '').trim()
+  if (!source) return null
+  const tokens = source.match(PREREQ_TOKEN_RE) || []
+  // Refuse anything containing text we don't understand.
+  if (tokens.join('').replace(/\s/g, '') !== source.replace(/\s/g, '')) return null
+
+  let pos = 0
+  const combine = (type, items) => {
+    const flat = items.flatMap((item) => (item.type === type ? item.items : [item]))
+    return flat.length === 1 ? flat[0] : { type, items: flat }
+  }
+  const parseAtom = () => {
+    const token = tokens[pos++]
+    if (token === '(') {
+      const node = parseOr()
+      if (tokens[pos++] !== ')') throw new Error('unbalanced')
+      return node
+    }
+    if (token && /\d/.test(token)) return { type: 'course', code: token }
+    throw new Error('unexpected token')
+  }
+  const parseAnd = () => {
+    const items = [parseAtom()]
+    while (tokens[pos] === 'AND') { pos++; items.push(parseAtom()) }
+    return combine('and', items)
+  }
+  function parseOr() {
+    const items = [parseAnd()]
+    while (tokens[pos] === 'OR') { pos++; items.push(parseAnd()) }
+    return combine('or', items)
+  }
+
+  try {
+    const tree = parseOr()
+    return pos === tokens.length ? tree : null
+  } catch {
+    return null
+  }
+}
+
+export const prereqCodes = (text) => String(text || '').match(/[A-Z]{3,4} \d{3}[A-Z]?/g) || []

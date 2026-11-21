@@ -4,7 +4,7 @@ import { Analytics } from '@vercel/analytics/react'
 import { SpeedInsights } from '@vercel/speed-insights/react'
 import TermSelect from './TermSelect.jsx'
 import CourseGroup from './CourseGroup.jsx'
-import { getInstructorNames, sectionKey } from './format.js'
+import { getInstructorNames, prereqCodes, sectionKey } from './format.js'
 
 const DEFAULT_TERM_CODE = '202710'
 // In dev, requests go to /api on the page's own origin and Vite proxies them to
@@ -82,6 +82,9 @@ function App() {
   const [analyzingDiversity, setAnalyzingDiversity] = useState(initialUrlState.analyzingDiversity)
   const [terms, setTerms] = useState([])
   const [results, setResults] = useState({})
+  // Cached course relations: { leadsTo: { crs: [crs] }, titles: { crs: title } }
+  const [relations, setRelations] = useState({ leadsTo: {}, titles: {} })
+  const relationsRequestedRef = useRef(new Set())
   // Query string of the search whose results are currently displayed.
   const [resultsKey, setResultsKey] = useState(null)
   const [loading, setLoading] = useState(false)
@@ -298,8 +301,36 @@ function App() {
     })
   }, [])
 
-  const handleInstructorClick = (instructor) => {
-    const trimmed = String(instructor || '').trim()
+  // Fetch "leads to" lists and titles for displayed courses and their prereqs.
+  useEffect(() => {
+    const codes = new Set()
+    for (const [courseCode, instances] of Object.entries(results)) {
+      codes.add(courseCode)
+      instances.forEach((course) => prereqCodes(course.prerequisites).forEach((code) => codes.add(code)))
+    }
+    const missing = [...codes].filter((code) => !relationsRequestedRef.current.has(code))
+    if (missing.length === 0) return
+    missing.forEach((code) => relationsRequestedRef.current.add(code))
+
+    const params = new URLSearchParams()
+    missing.forEach((code) => params.append('crs', code))
+    apiFetch(`/api/course-relations?${params.toString()}`)
+      .then((res) => (res.ok ? res.json() : Promise.reject(new Error(`Relations failed (${res.status})`))))
+      .then((data) => setRelations((prev) => ({
+        leadsTo: { ...prev.leadsTo, ...data.leads_to },
+        titles: { ...prev.titles, ...data.titles },
+      })))
+      .catch((err) => {
+        // Allow a retry on the next search.
+        missing.forEach((code) => relationsRequestedRef.current.delete(code))
+        console.error('Error fetching course relations:', err)
+      })
+  }, [results, apiFetch])
+
+  // Runs a new search for an instructor or course code, keeping the current
+  // search reachable via Back and the "previous search" button.
+  const searchFor = (text) => {
+    const trimmed = String(text || '').trim()
     if (!trimmed || trimmed.toUpperCase() === 'TBA') return
 
     const priorQuery = query.trim()
@@ -626,7 +657,9 @@ function App() {
                   lookups={lookups}
                   onTogglePanel={togglePanel}
                   onRetryPanel={retryPanel}
-                  onInstructorClick={handleInstructorClick}
+                  onInstructorClick={searchFor}
+                  onCourseClick={searchFor}
+                  relations={relations}
                   collapsedInstructorSections={collapsedInstructorSections}
                   onToggleInstructorSection={toggleInstructorSectionCollapsed}
                 />

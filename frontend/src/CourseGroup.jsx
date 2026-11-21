@@ -1,5 +1,6 @@
 import { useMemo, useRef } from 'react'
 import SectionPanel from './SectionPanel.jsx'
+import CourseInfo from './CourseInfo.jsx'
 import { coursePageUrl, formatCredits, isTba, parseList, sectionKey } from './format.js'
 
 // When expanded past this many sections, also show a collapse button at the bottom.
@@ -27,7 +28,11 @@ function summarize(instances) {
     return instances.every((c) => (c[field] || null) === first) ? first : null
   }
 
+  // Descriptions and requirements change over time; use the most recent offering.
+  const latest = instances.reduce((best, c) => (Number(c.term) > Number(best.term) ? c : best), instances[0])
+
   return {
+    latest,
     termCount: termCodes.length,
     lastTerm: termCodes[termCodes.length - 1],
     topInstructors,
@@ -130,6 +135,8 @@ export default function CourseGroup({
   onTogglePanel,
   onRetryPanel,
   onInstructorClick,
+  onCourseClick,
+  relations,
   collapsedInstructorSections,
   onToggleInstructorSection,
 }) {
@@ -137,6 +144,7 @@ export default function CourseGroup({
   const displayInstances = isExpanded ? instances : instances.slice(0, 1)
   const sectionCount = instances.length
   const title = instances[0]?.title
+  const permission = summary.latest?.permission?.replace(/\s*Required$/i, '')
   const groupRef = useRef(null)
 
   const toggleButton = (isFooter = false) => (
@@ -161,15 +169,24 @@ export default function CourseGroup({
         <div className="course-heading">
           <h3>{courseCode}</h3>
           {title && <p className="course-title">{title}</p>}
-          {(summary.sharedCredits || summary.sharedDistribution) && (
+          {(summary.sharedCredits || summary.sharedDistribution || permission) && (
             <div className="course-tags">
               {summary.sharedCredits && <span className="tag">{formatCredits(summary.sharedCredits)}</span>}
               {summary.sharedDistribution && <span className="tag tag-dist">{summary.sharedDistribution}</span>}
+              {permission && <span className="tag tag-perm">{permission} required</span>}
             </div>
           )}
         </div>
         {sectionCount > 1 && toggleButton()}
       </header>
+
+      <CourseInfo
+        description={summary.latest?.description}
+        prerequisites={summary.latest?.prerequisites}
+        leadsTo={relations.leadsTo[courseCode]}
+        titles={relations.titles}
+        onCourseClick={onCourseClick}
+      />
 
       {summary.termCount > 1 && (
         <div className="course-summary">
