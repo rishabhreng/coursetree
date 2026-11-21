@@ -136,7 +136,6 @@ export default function CourseGroup({
   onRetryPanel,
   onInstructorClick,
   onCourseClick,
-  relations,
   collapsedInstructorSections,
   onToggleInstructorSection,
 }) {
@@ -183,8 +182,6 @@ export default function CourseGroup({
       <CourseInfo
         description={summary.latest?.description}
         prerequisites={summary.latest?.prerequisites}
-        leadsTo={relations.leadsTo[courseCode]}
-        titles={relations.titles}
         onCourseClick={onCourseClick}
       />
 

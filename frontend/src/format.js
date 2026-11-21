@@ -198,5 +198,3 @@ export const parsePrereqs = (text) => {
     return null
   }
 }
-
-export const prereqCodes = (text) => String(text || '').match(/[A-Z]{3,4} \d{3}[A-Z]?/g) || []

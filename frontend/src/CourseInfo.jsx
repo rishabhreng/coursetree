@@ -1,15 +1,12 @@
 import { Fragment, useLayoutEffect, useRef, useState } from 'react'
 import { parsePrereqs } from './format.js'
 
-const LEADS_TO_PREVIEW = 8
-
-function CourseChip({ code, titles, onCourseClick }) {
-  const title = titles[code]
+function CourseChip({ code, onCourseClick }) {
   return (
     <button
       type="button"
       className="course-chip"
-      title={title ? `${code}: ${title}` : `Search ${code}`}
+      title={`Search ${code}`}
       onClick={() => onCourseClick(code)}
     >
       {code}
@@ -36,13 +33,13 @@ const joinWith = (items, word, renderItem) => items.map((item, idx) => (
 
 // Renders a node inline. `nested` is true when it sits inside another group
 // on the same line, in which case groups get a box so their scope is clear.
-function InlineRequirement({ node, nested = false, titles, onCourseClick }) {
+function InlineRequirement({ node, nested = false, onCourseClick }) {
   if (isCourse(node)) {
-    return <CourseChip code={node.code} titles={titles} onCourseClick={onCourseClick} />
+    return <CourseChip code={node.code} onCourseClick={onCourseClick} />
   }
 
   const renderChild = (child) => (
-    <InlineRequirement node={child} nested titles={titles} onCourseClick={onCourseClick} />
+    <InlineRequirement node={child} nested onCourseClick={onCourseClick} />
   )
 
   let content
@@ -85,9 +82,9 @@ const toLines = (tree) => {
   return lines
 }
 
-function Requirements({ tree, titles, onCourseClick }) {
+function Requirements({ tree, onCourseClick }) {
   if (fitsOnOneLine(tree)) {
-    return <InlineRequirement node={tree} titles={titles} onCourseClick={onCourseClick} />
+    return <InlineRequirement node={tree} onCourseClick={onCourseClick} />
   }
 
   return (
@@ -95,7 +92,7 @@ function Requirements({ tree, titles, onCourseClick }) {
       {toLines(tree).map((item, idx) => (
         <div key={idx} className="req-line">
           <span className="req-connector">{idx > 0 ? tree.type : ''}</span>
-          <InlineRequirement node={item} titles={titles} onCourseClick={onCourseClick} />
+          <InlineRequirement node={item} onCourseClick={onCourseClick} />
         </div>
       ))}
     </div>
@@ -130,49 +127,28 @@ function Description({ text }) {
   )
 }
 
-export default function CourseInfo({ description, prerequisites, leadsTo, titles, onCourseClick }) {
-  const [showAllLeadsTo, setShowAllLeadsTo] = useState(false)
+export default function CourseInfo({ description, prerequisites, onCourseClick }) {
   const tree = parsePrereqs(prerequisites)
   const hasPrereqs = Boolean(prerequisites?.trim())
-  const leadsToList = leadsTo || []
-  const visibleLeadsTo = showAllLeadsTo ? leadsToList : leadsToList.slice(0, LEADS_TO_PREVIEW)
-  const hiddenCount = leadsToList.length - visibleLeadsTo.length
 
-  if (!description && !hasPrereqs && leadsToList.length === 0) return null
+  if (!description && !hasPrereqs) return null
 
   return (
     <div className="course-info">
       {description && <Description text={description} />}
 
-      {(hasPrereqs || leadsToList.length > 0) && (
+      {hasPrereqs && (
         <dl className="course-reqs">
-          {hasPrereqs && (
-            <div className="req-row">
-              <dt>Requires</dt>
-              <dd>
-                {tree ? (
-                  <Requirements tree={tree} titles={titles} onCourseClick={onCourseClick} />
-                ) : (
-                  <span className="req-raw">{prerequisites}</span>
-                )}
-              </dd>
-            </div>
-          )}
-          {leadsToList.length > 0 && (
-            <div className="req-row">
-              <dt>Leads to</dt>
-              <dd>
-                {visibleLeadsTo.map((code) => (
-                  <CourseChip key={code} code={code} titles={titles} onCourseClick={onCourseClick} />
-                ))}
-                {(hiddenCount > 0 || showAllLeadsTo) && leadsToList.length > LEADS_TO_PREVIEW && (
-                  <button type="button" className="link-btn" onClick={() => setShowAllLeadsTo((v) => !v)}>
-                    {showAllLeadsTo ? 'Show fewer' : `+${hiddenCount} more`}
-                  </button>
-                )}
-              </dd>
-            </div>
-          )}
+          <div className="req-row">
+            <dt>Requires</dt>
+            <dd>
+              {tree ? (
+                <Requirements tree={tree} onCourseClick={onCourseClick} />
+              ) : (
+                <span className="req-raw">{prerequisites}</span>
+              )}
+            </dd>
+          </div>
         </dl>
       )}
     </div>

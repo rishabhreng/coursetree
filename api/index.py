@@ -3,12 +3,11 @@ import re
 import sqlite3 as sql
 from typing import Optional
 
-from fastapi import FastAPI, HTTPException, Depends, Query
+from fastapi import FastAPI, HTTPException, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 
 from fetch_utils import (
-    DB_PATH,
     SYLLABI_DIR,
     get_db,
     get_evals_db,
@@ -225,65 +224,6 @@ def search_courses(
 @app.get("/api/terms")
 def get_terms(db = Depends(get_db)):
     return db.cursor().execute("SELECT code, term FROM terms ORDER BY code DESC").fetchall()
-
-
-COURSE_CODE_RE = re.compile(r"\b[A-Z]{3,4} \d{3}[A-Z]?\b")
-# Only courses offered within this many years count toward "leads to", so
-# requirements from long-retired catalog entries don't show up.
-LEADS_TO_RECENT_YEARS = 4
-_relations_cache = {"mtime": None, "titles": {}, "leads_to": {}}
-
-
-def _course_relations():
-    """Builds (and caches until main.db changes) course titles and the reverse
-    prerequisite index, using each course's most recent offering."""
-    mtime = DB_PATH.stat().st_mtime
-    if _relations_cache["mtime"] == mtime:
-        return _relations_cache
-
-    conn = sql.connect(f"file:{DB_PATH}?mode=ro", uri=True)
-    try:
-        rows = conn.execute("SELECT term, crs, title, prerequisites FROM global_search").fetchall()
-    finally:
-        conn.close()
-
-    latest = {}  # crs -> (term_code, title, prerequisites)
-    for term, crs, title, prereqs in rows:
-        if not crs:
-            continue
-        term_code = term.split("courses_", 1)[-1]
-        if crs not in latest or term_code > latest[crs][0]:
-            latest[crs] = (term_code, title, prereqs or "")
-
-    newest_term = max((v[0] for v in latest.values()), default="0")
-    cutoff = str(int(newest_term[:4]) - LEADS_TO_RECENT_YEARS) + newest_term[4:]
-
-    leads_to = {}
-    for crs, (term_code, _title, prereqs) in latest.items():
-        if term_code < cutoff:
-            continue
-        for required in set(COURSE_CODE_RE.findall(prereqs)):
-            if required != crs:
-                leads_to.setdefault(required, []).append(crs)
-
-    _relations_cache.update(
-        mtime=mtime,
-        titles={crs: v[1] for crs, v in latest.items()},
-        leads_to={k: sorted(v) for k, v in leads_to.items()},
-    )
-    return _relations_cache
-
-
-@app.get("/api/course-relations")
-def get_course_relations(crs: list[str] = Query(default=[])):
-    """For each requested course code: the current courses that list it as a
-    prerequisite ("leads to"), plus titles for every code involved."""
-    relations = _course_relations()
-    requested = list(dict.fromkeys(c.strip().upper() for c in crs if c.strip()))[:1000]
-    leads_to = {c: relations["leads_to"].get(c, []) for c in requested}
-    codes = set(requested).union(*leads_to.values())
-    titles = {c: relations["titles"][c] for c in codes if c in relations["titles"]}
-    return {"leads_to": leads_to, "titles": titles}
 
 def find_local_syllabus_file(term_code: str, crn: str):
     """Finds downloaded syllabus file on disk for a given term and crn."""
